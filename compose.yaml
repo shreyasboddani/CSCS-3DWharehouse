@@ -1,0 +1,18 @@
+services:
+  warehouse:
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the exact public HTTPS origin}
+    ports:
+      - "127.0.0.1:4310:4310"
+    volumes:
+      - warehouse-data:/app/var
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 15s
+volumes:
+  warehouse-data:

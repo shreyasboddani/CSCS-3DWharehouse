@@ -4,30 +4,41 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty && tsc -p tsconfig.server.json",
+    "api": "tsx watch server/index.ts",
+    "start": "tsx server/index.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "db:backup": "tsx scripts/database.ts backup",
+    "db:restore": "tsx scripts/database.ts restore",
+    "smoke:production": "node scripts/smoke-production.mjs"
   },
   "dependencies": {
+    "pg": "^8.23.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.4",
     "three": "^0.186.1",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   },
   "engines": {
-    "node": ">=22.12.0",
+    "node": "24.x",
     "npm": ">=10.0.0"
   }
 }
