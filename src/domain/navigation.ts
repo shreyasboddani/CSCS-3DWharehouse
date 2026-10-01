@@ -1,11 +1,13 @@
 import type { Layout, WarehouseConfig } from "./warehouse";
 import { facilityFixtures } from "./facility";
+import { designWalkable } from "./design";
 export type Point2 = { x: number; z: number };
 export function isWalkable(
   point: Point2,
   config: WarehouseConfig,
   layout: Layout,
 ) {
+  if (config.design) return designWalkable(point, config.design.floors[0]);
   if (
     Math.abs(point.x) > config.width / 2 - 0.6 ||
     Math.abs(point.z) > config.depth / 2 - 0.6

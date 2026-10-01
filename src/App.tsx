@@ -1,3 +1,6 @@
+import { DraftList } from "./app/DraftList";
+import { AutomationPanel } from "./app/AutomationPanel";
+import type { DesignDraft, DraftInput } from "./domain/drafts";
 import { Landing } from "./app/Landing";
 import { Brand, Icon } from "./app/ui";
 import {
@@ -40,6 +43,7 @@ import type {
   Zone,
 } from "./domain/warehouse";
 import type { ViewMode } from "./scene/WarehouseScene";
+import { DesignEditor } from "./app/DesignEditor";
 import { FloorPlan, LayoutPlacement } from "./app/FloorPlan";
 import {
   CsvImport,
@@ -452,6 +456,7 @@ function Dashboard() {
           Add an example warehouse for exploration →
         </button>
       )}
+      <DraftList />
       <ArchivedWarehouses onRestored={refresh} />
     </div>
   );
@@ -552,6 +557,21 @@ function NumberField({
   );
 }
 function Builder() {
+  const [draftParams, setDraftParams] = useSearchParams();
+  const draftQuery = draftParams.get("draft");
+  const draftMounted = useRef(true);
+  useEffect(() => {
+    draftMounted.current = true;
+    return () => {
+      draftMounted.current = false;
+    };
+  }, []);
+  const draftRef = useRef<DesignDraft | null>(null),
+    draftQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const [draftContext, setDraftContext] = useState<DraftInput["context"]>(),
+    [draftStatus, setDraftStatus] = useState("");
+
+  const [designOpen, setDesignOpen] = useState(false);
   const [builderMode, setBuilderMode] = useState<ViewMode>("orbit");
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const { id } = useParams(),
@@ -562,15 +582,76 @@ function Builder() {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [existing, setExisting] = useState<Warehouse | null>(null);
+
   useEffect(() => {
-    if (id)
-      api<{ warehouse: Warehouse }>("/warehouses/" + id)
-        .then((r) => {
+    let cancelled = false;
+    async function load() {
+      try {
+        if (id) {
+          const r = await api<{ warehouse: Warehouse }>("/warehouses/" + id);
+          if (cancelled) return;
           setExisting(r.warehouse);
-          setConfig(r.warehouse.config);
-        })
-        .catch((e) => setError(errorText(e)));
-  }, [id]);
+          if (!draftQuery) setConfig(r.warehouse.config);
+        }
+        if (draftQuery && draftRef.current?.id !== draftQuery) {
+          const r = await api<{ draft: DesignDraft }>("/drafts/" + draftQuery);
+          if (cancelled) return;
+          if ((r.draft.warehouseId || undefined) !== id)
+            throw new Error("This draft belongs to another warehouse.");
+          draftRef.current = r.draft;
+          setConfig(r.draft.config);
+          setDraftContext(r.draft.context);
+          setDesignOpen(r.draft.context.mode === "studio");
+          setDraftStatus("Draft restored");
+        }
+      } catch (e) {
+        if (!cancelled) setError(errorText(e));
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, draftQuery]);
+  const saveDraft = useCallback(
+    (
+      next: WarehouseConfig,
+      context: DraftInput["context"] = { mode: "template" },
+    ) => {
+      setDraftStatus("Saving draft…");
+      const operation = draftQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const current = draftRef.current;
+          const r = await api<{ draft: DesignDraft }>(
+            "/drafts" + (current ? "/" + current.id : ""),
+            current ? "PUT" : "POST",
+            {
+              config: next,
+              warehouseId: id,
+              context,
+              version: current?.version,
+            },
+          );
+          draftRef.current = r.draft;
+          setDraftStatus(
+            "Draft saved · " +
+              new Date(r.draft.updatedAt).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+          );
+          if (!current)
+            setDraftParams({ draft: r.draft.id }, { replace: true });
+        });
+      draftQueue.current = operation;
+      return operation.catch((e) => {
+        setDraftStatus("Draft not saved · " + errorText(e));
+        throw e;
+      });
+    },
+    [id, setDraftParams],
+  );
   const layout = generateLayout(config);
   const update = (key: keyof WarehouseConfig, value: string | number) =>
     setConfig((c) => ({ ...c, [key]: value }));
@@ -583,6 +664,16 @@ function Builder() {
         id ? "PUT" : "POST",
         { config, version: existing?.version },
       );
+      await draftQueue.current.catch(() => undefined);
+      if (draftRef.current) {
+        try {
+          await api("/drafts/" + draftRef.current.id + "/complete", "POST", {
+            version: draftRef.current.version,
+          });
+        } catch {
+          /* The warehouse is saved; retaining a draft is safe. */
+        }
+      }
       await refresh();
       navigate("/app/warehouses/" + result.warehouse.id);
     } catch (e) {
@@ -592,13 +683,122 @@ function Builder() {
     }
   }
   const steps = ["Receive & stage", "Storage", "Pack & dispatch", "Review"];
+  if (designOpen)
+    return (
+      <DesignEditor
+        config={config}
+        records={existing?.records || []}
+        draftStatus={draftStatus}
+        draftContext={draftContext}
+        onSaveDraft={saveDraft}
+        onClose={(next) => {
+          if (next) setConfig(next);
+          setDesignOpen(false);
+        }}
+        onApply={(next) => {
+          setConfig(next);
+          setDesignOpen(false);
+          setStep(3);
+        }}
+      />
+    );
+  if (config.design)
+    return (
+      <div className="builder-page">
+        <Link className="back-link" to={id ? "/app/warehouses/" + id : "/app"}>
+          ← Back
+        </Link>
+        <div className="builder-title">
+          <div>
+            <span className="eyebrow">CUSTOM WAREHOUSE DESIGN</span>
+            <h1>{config.name}</h1>
+            <p>
+              {config.design.floors.length} floors ·{" "}
+              {layout.capacity.toLocaleString()} storage bins ·{" "}
+              {layout.locations.length.toLocaleString()} mapped addresses
+            </p>
+          </div>
+          <button
+            className="button secondary"
+            onClick={() => setDesignOpen(true)}
+          >
+            Edit in 2D studio
+          </button>
+        </div>
+        <div className="actions">
+          <button
+            className="button secondary small"
+            onClick={() => {
+              void saveDraft(config, { mode: "studio" }).catch(() => undefined);
+            }}
+          >
+            Save draft
+          </button>
+          <span className="subtle" role="status">
+            {draftStatus}
+          </span>
+        </div>
+        <div className="design-review-scene">
+          <SceneView
+            config={config}
+            records={existing?.records || []}
+            designPreview
+            mode={builderMode}
+            onModeChange={setBuilderMode}
+          />
+        </div>
+        {layout.errors.map((e) => (
+          <p className="error" key={e}>
+            {e}
+          </p>
+        ))}
+        {error && <p className="error">{error}</p>}
+        <div className="actions">
+          <button
+            className="button"
+            disabled={busy || layout.errors.length > 0}
+            onClick={save}
+          >
+            {busy
+              ? "Saving…"
+              : id
+                ? "Save warehouse design"
+                : "Create warehouse"}
+          </button>
+        </div>
+        <p className="subtle">
+          Saved designs keep equipment, floor geometry and address mappings
+          together. Existing inventory is validated before changes are accepted.
+        </p>
+      </div>
+    );
+
   return (
     <div className="builder-page">
       <div className="builder-header">
         <Link className="back-link" to={id ? "/app/warehouses/" + id : "/app"}>
           ← {id ? "Back to warehouse" : "All warehouses"}
         </Link>
-        <span className="pill">WAREHOUSE BUILDER</span>
+        <div className="actions">
+          <button
+            className="button secondary small"
+            onClick={() => {
+              void saveDraft(config).catch(() => undefined);
+            }}
+          >
+            Save draft
+          </button>
+          <span className="subtle" role="status">
+            {draftStatus}
+          </span>
+          <button
+            className="button secondary small"
+            disabled={!!id && !existing}
+            onClick={() => setDesignOpen(true)}
+          >
+            Open 2D design studio
+          </button>
+        </div>
       </div>
       <div className="builder-title">
         <div>
@@ -1595,6 +1795,9 @@ function Twin({ preview = false }: { preview?: boolean }) {
           </button>
         ))}
       </nav>
+      {!preview && (
+        <AutomationPanel warehouse={warehouse} onChange={setWarehouse} />
+      )}
       <div className="twin-layout">
         <section
           className={"viewport " + (expanded ? "viewport-expanded" : "")}
@@ -1636,6 +1839,7 @@ function Twin({ preview = false }: { preview?: boolean }) {
           </div>
           <SceneView
             config={warehouse.config}
+            automation={warehouse.automation}
             records={warehouse.records}
             selected={selected}
             focus={zone === "all" ? undefined : zone}

@@ -1,4 +1,6 @@
 import * as T from "three";
+import { usesTemplateGeometry } from "../domain/design";
+import { buildDesignWorld } from "./buildDesignWorld";
 import { dockPose, facilityFixtures } from "../domain/facility";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
@@ -19,7 +21,25 @@ export function buildWarehouseWorld({
   records,
   designPreview,
   compact,
-}: Options) {
+}: Options): Omit<
+  ReturnType<typeof buildDesignWorld>,
+  "ground" | "highlight"
+> & { ground: T.Mesh; highlight: T.Mesh; hitTargets?: T.Object3D[] } {
+  if (c.design) {
+    const legacyConfig = { ...c, design: undefined };
+    const legacy = generateLayout(legacyConfig);
+    if (usesTemplateGeometry(c, legacy))
+      return {
+        ...buildWarehouseWorld({
+          config: legacyConfig,
+          records,
+          designPreview,
+          compact,
+        }),
+        layout: generateLayout(c),
+      };
+    return buildDesignWorld({ config: c, records, designPreview, compact });
+  }
   const layout = generateLayout(c),
     root = new T.Group(),
     interiorShell = new T.Group(),
@@ -264,7 +284,10 @@ export function buildWarehouseWorld({
   const wallHeight = c.ceilingHeight ?? Math.max(7.5, c.levels * 1.25 + 2.4),
     front = -c.depth / 2,
     back = c.depth / 2;
-  box(root, 0, -0.38, 0, c.width + 1, 0.75, c.depth + 1, m.white, true);
+  // Keep the foundation below the entire floor thickness. The old slab top
+  // was only 5 mm below the floor surface, causing depth/shadow interference
+  // when viewing a large facility from above.
+  box(root, 0, -0.455, 0, c.width + 1, 0.75, c.depth + 1, m.white, true);
   const ground = box(root, 0, -0.035, 0, c.width, 0.07, c.depth, m.floor);
   ground.name = "Warehouse floor";
   const yardDepth = c.yardDepth ?? 12;
@@ -1265,6 +1288,11 @@ export function buildWarehouseWorld({
     root,
     layout,
     ground,
+    setActiveFloor: (_id?: string) => {},
+    setAutomation: (
+      _state?: import("../domain/automation").AutomationState,
+    ) => {},
+    animate: (_elapsed: number) => {},
     hitTargets,
     binMeshes,
     highlight,

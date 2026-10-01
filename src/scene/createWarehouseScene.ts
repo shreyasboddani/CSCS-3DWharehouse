@@ -12,8 +12,10 @@ import {
   nearestWalkable,
 } from "../domain/navigation";
 import { zones } from "../domain/warehouse";
+import { floorElevation, localPoint } from "../domain/design";
 import type { WarehouseConfig, OperationalRecord } from "../domain/warehouse";
 import type { Point2 } from "../domain/navigation";
+import type { AutomationState } from "../domain/automation";
 export type ViewMode = "orbit" | "plan" | "walk";
 type Options = {
   config: WarehouseConfig;
@@ -116,6 +118,8 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     pointer = new T.Vector2(),
     keys = new Set<string>();
   let mode: ViewMode = "orbit",
+    walkElevation = 0,
+    navigationConfig = c,
     exterior = false,
     yaw = 0,
     pitch = 0,
@@ -142,12 +146,17 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   scene.add(routeLine);
   routeLine.visible = false;
   function routeTo(point: Point2, look?: Point2) {
-    walkPath = findWalkPath(camera.position, point, c, world.layout);
+    walkPath = findWalkPath(
+      camera.position,
+      point,
+      navigationConfig,
+      world.layout,
+    );
     arrivalLook = look || null;
     routeGeo.dispose();
     routeGeo = new T.BufferGeometry().setFromPoints([
       camera.position,
-      ...walkPath.map((p) => new T.Vector3(p.x, 0.05, p.z)),
+      ...walkPath.map((p) => new T.Vector3(p.x, walkElevation + 0.05, p.z)),
     ]);
     routeLine.geometry = routeGeo;
     routeLine.visible = walkPath.length > 0;
@@ -159,7 +168,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
       routeLine.visible = false;
     } else keys.delete(key);
   }
-  function focus(id?: string, nextMode: ViewMode = "orbit") {
+  function focus(id?: string, nextMode: ViewMode = "orbit", floorId?: string) {
     const previous = mode;
     mode = nextMode;
     controls.enabled = mode !== "walk" && !compact;
@@ -168,43 +177,82 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     world.setShell(mode === "walk" || exterior);
     renderer.shadowMap.needsUpdate = true;
     routeLine.visible = false;
-    const location = id ? locations.get(id) : undefined,
+    const candidate = id ? locations.get(id) : undefined;
+    const location =
+        floorId && candidate?.floorId !== floorId ? undefined : candidate,
       zone = zones.find((z) => z.id === id);
+    const floorIndex = c.design
+      ? Math.max(
+          0,
+          c.design.floors.findIndex(
+            (f) => f.id === (location?.floorId || floorId),
+          ),
+        )
+      : 0;
+    const activeFloor = c.design?.floors[floorIndex];
+    const previousElevation = walkElevation;
+    walkElevation = c.design ? floorElevation(c.design, floorIndex) : 0;
+    navigationConfig =
+      c.design && activeFloor
+        ? { ...c, design: { ...c.design, floors: [activeFloor] } }
+        : c;
+    world.setActiveFloor(
+      location?.floorId ||
+        floorId ||
+        (mode === "walk" ? activeFloor?.id : undefined),
+    );
     const center = zone ? world.layout.centers[zone.id] : [0, 0];
     const point = new T.Vector3(
       location?.x ?? center[0],
-      location?.y ?? 0,
+      location?.y ??
+        (floorId
+          ? walkElevation
+          : (c.design?.floors.length || 0) > 1
+            ? world.wallHeight / 2
+            : 0),
       location?.z ?? center[1],
     );
     world.highlight.visible = !!location;
     if (location) {
+      const module = c.design?.floors
+        .flatMap((f) => f.modules)
+        .find((m) => m.id === location.moduleId);
+      world.highlight.rotation.y = (-(module?.rotation || 0) * Math.PI) / 180;
       world.highlight.position.set(location.x, location.y + 0.28, location.z);
       world.highlight.scale.set(
         location.zone === "storage" ? 1.03 : 2,
         location.zone === "storage" ? 0.85 : 1.8,
-        location.zone === "storage" ? (2 / c.bins) * 0.9 : 2,
+        location.zone === "storage" ? (2 / (module?.bins || c.bins)) * 0.9 : 2,
       );
     }
     if (mode === "walk") {
       flight = null;
-      if (previous !== "walk") {
+      if (previous !== "walk" || previousElevation !== walkElevation) {
         const entry = nearestWalkable(
           { x: world.layout.centers.inbound[0], z: -c.depth / 2 + 3.3 },
-          c,
+          navigationConfig,
           world.layout,
         );
-        camera.position.set(entry.x, 1.72, entry.z);
+        camera.position.set(entry.x, walkElevation + 1.72, entry.z);
         yaw = Math.PI;
         pitch = 0;
         camera.rotation.order = "YXZ";
       }
       let destination = { x: point.x, z: point.z };
-      if (location?.zone === "storage") {
+      if (c.design && location) {
+        const module = activeFloor?.modules.find(
+          (m) => m.id === location.moduleId,
+        );
+        destination =
+          module?.kind === "aisle"
+            ? localPoint(module, 0, 0)
+            : { x: location.x + 2, z: location.z };
+      } else if (location?.zone === "storage") {
         const left = world.layout.racks.find(
           (r) => r.aisle === location.aisle && r.side === "L",
         )!;
         destination = { x: left.x + c.aisleWidth / 2 + 0.6, z: location.z };
-      } else if (zone?.id === "storage") {
+      } else if (!c.design && zone?.id === "storage") {
         const left = world.layout.racks[0];
         destination = {
           x: left.x + c.aisleWidth / 2 + 0.6,
@@ -217,7 +265,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
         destination.z +=
           c.template === "through" && location.zone === "outbound" ? -2.5 : 2.5;
       if (id)
-        routeTo(nearestWalkable(destination, c, world.layout), {
+        routeTo(nearestWalkable(destination, navigationConfig, world.layout), {
           x: point.x,
           z: point.z,
         });
@@ -238,7 +286,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
             point.y + distance * 0.7,
             point.z + distance * 0.8,
           );
-    if (location?.zone === "storage" && mode === "orbit") {
+    if (!c.design && location?.zone === "storage" && mode === "orbit") {
       const left = world.layout.racks.find(
         (r) => r.aisle === location.aisle && r.side === "L",
       )!;
@@ -292,14 +340,24 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     });
     if (!hit) return null;
     const locs = world.binMeshes.get(hit.object as T.InstancedMesh);
-    const id =
+    let id =
       locs && hit.instanceId !== undefined
         ? locs[hit.instanceId].id
         : hit.object.userData.locationId;
+    let ancestor: T.Object3D | null = hit.object;
+    while (!id && ancestor) {
+      id =
+        ancestor.userData.locationId ||
+        (ancestor.userData.moduleId
+          ? "module:" + ancestor.userData.moduleId
+          : undefined);
+      ancestor = ancestor.parent;
+    }
     return {
       id: id as string | undefined,
       point: hit.point,
-      ground: hit.object === world.ground || hit.point.y < 0.08,
+      ground:
+        hit.object === world.ground || hit.object.userData.walkSurface === true,
     };
   }
   let down: { x: number; y: number; lastX: number; lastY: number } | null =
@@ -442,7 +500,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
           x: camera.position.x + (dx / (distance || 1)) * amount,
           z: camera.position.z + (dz / (distance || 1)) * amount,
         };
-        if (isWalkable(next, c, world.layout)) {
+        if (isWalkable(next, navigationConfig, world.layout)) {
           camera.position.x = next.x;
           camera.position.z = next.z;
         } else {
@@ -480,7 +538,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
         if (
           isWalkable(
             { x: camera.position.x + dx, z: camera.position.z },
-            c,
+            navigationConfig,
             world.layout,
           )
         )
@@ -488,13 +546,13 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
         if (
           isWalkable(
             { x: camera.position.x, z: camera.position.z + dz },
-            c,
+            navigationConfig,
             world.layout,
           )
         )
           camera.position.z += dz;
       }
-      camera.position.y = 1.72;
+      camera.position.y = walkElevation + 1.72;
       camera.rotation.order = "YXZ";
       camera.rotation.set(pitch, yaw, 0);
     } else {
@@ -514,6 +572,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
       }
       controls.update();
     }
+    if (!reduced) world.animate(elapsed);
     if (!reduced)
       world.operators.forEach(({ arm, phase }) => {
         arm.rotation.x = Math.sin(elapsed * 1.3 + phase) * 0.04;
@@ -525,6 +584,10 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   frame = requestAnimationFrame(animate);
   return {
     focus,
+    setAutomation: (state?: AutomationState) => {
+      world.setAutomation(state);
+      renderer.shadowMap.needsUpdate = true;
+    },
     setKey,
     setExterior: (value: boolean) => {
       exterior = value;
@@ -533,9 +596,8 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
       renderer.shadowMap.needsUpdate = true;
     },
     exportModel: async () => {
-      const { GLTFExporter } = await import(
-        "three/addons/exporters/GLTFExporter.js"
-      );
+      const { GLTFExporter } =
+        await import("three/addons/exporters/GLTFExporter.js");
       const previous = world.highlight.visible;
       world.highlight.visible = false;
       const roof = world.ceiling.visible,

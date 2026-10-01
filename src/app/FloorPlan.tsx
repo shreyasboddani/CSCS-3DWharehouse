@@ -1,3 +1,4 @@
+import { equipmentCatalog, moduleSize } from "../domain/design";
 import { generateLayout, zones } from "../domain/warehouse";
 import type {
   WarehouseConfig,
@@ -26,6 +27,63 @@ export function FloorPlan({
     ),
     width = config.width,
     depth = config.depth;
+  if (config.design) {
+    const floor = config.design.floors[0];
+    return (
+      <svg
+        className="warehouse-floor-plan"
+        role="img"
+        aria-label="Custom ground floor warehouse plan"
+        viewBox={`${-width / 2 - 2} ${-depth / 2 - 2} ${width + 4} ${depth + 4}`}
+      >
+        <polygon
+          points={floor.outline.map((p) => `${p.x},${p.z}`).join(" ")}
+          fill="#edf2f6"
+          stroke="#7a91ad"
+          strokeWidth=".25"
+        />
+        {floor.modules.map((m) => {
+          const size = moduleSize(m);
+          return (
+            <g key={m.id}>
+              <rect
+                x={m.x - size.width / 2}
+                y={m.z - size.depth / 2}
+                width={size.width}
+                height={size.depth}
+                fill={
+                  equipmentCatalog.find((e) => e.id === m.kind)?.color ||
+                  "#89a8c2"
+                }
+                fillOpacity={m.kind === "area" ? 0.1 : 0.5}
+                stroke="#fff"
+                strokeWidth=".08"
+              />
+              <title>{m.label}</title>
+            </g>
+          );
+        })}
+        {layout.locations
+          .filter(
+            (l) =>
+              l.floorId === floor.id && (l.zone !== "storage" || l.level === 1),
+          )
+          .map((l) => (
+            <rect
+              key={l.id}
+              x={l.x - 0.4}
+              y={l.z - 0.3}
+              width={0.8}
+              height={0.6}
+              fill={occupied.has(l.id) ? "#09a49b" : "#477ba7"}
+              onClick={() => onSelect?.(l.id)}
+            >
+              <title>{l.label}</title>
+            </rect>
+          ))}
+      </svg>
+    );
+  }
   return (
     <svg
       className="warehouse-floor-plan"

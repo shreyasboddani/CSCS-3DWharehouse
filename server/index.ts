@@ -13,6 +13,12 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { draftInputSchema } from "../src/domain/drafts.ts";
+import {
+  applyAutomation,
+  automationCommandSchema,
+} from "../src/domain/automation.ts";
+import type { DesignDraft, DraftInput } from "../src/domain/drafts.ts";
 import {
   configSchema,
   generateLayout,
@@ -101,6 +107,8 @@ export function createApplication(
     CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, salt TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS warehouses (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), version INTEGER NOT NULL, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS design_drafts (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), version INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS draft_tenant ON design_drafts(tenant_id);
     CREATE INDEX IF NOT EXISTS warehouse_tenant ON warehouses(tenant_id);
     CREATE TABLE IF NOT EXISTS archived_warehouses (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), version INTEGER NOT NULL, payload TEXT NOT NULL, archived_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS archived_warehouse_tenant ON archived_warehouses(tenant_id);
@@ -363,6 +371,118 @@ export function createApplication(
           json({ ok: true });
           return;
         }
+
+        if (pathname === "/api/v1/drafts" && method === "GET") {
+          const rows = (await db
+            .prepare(
+              "SELECT payload FROM design_drafts WHERE tenant_id=? ORDER BY updated_at DESC",
+            )
+            .all(user.tenant_id)) as { payload: string }[];
+          json({
+            drafts: rows
+              .map((r) => JSON.parse(r.payload) as DesignDraft)
+              .filter((d) => !d.completed),
+          });
+          return;
+        }
+        const draftMatch = pathname.match(
+          /^\/api\/v1\/drafts(?:\/([a-zA-Z0-9-]+))?(?:\/(complete))?$/,
+        );
+        if (draftMatch) {
+          const draftId = draftMatch[1],
+            row = draftId
+              ? ((await db
+                  .prepare(
+                    "SELECT payload,version FROM design_drafts WHERE id=? AND tenant_id=?",
+                  )
+                  .get(draftId, user.tenant_id)) as
+                  { payload: string; version: number } | undefined)
+              : undefined;
+          if (draftId && !row)
+            throw new HttpError(404, "Design draft not found.");
+          if (method === "GET" && row) {
+            json({ draft: JSON.parse(row.payload) });
+            return;
+          }
+          if (
+            (method === "POST" && !draftId) ||
+            (method === "PUT" && row) ||
+            (method === "POST" && row && draftMatch[2])
+          ) {
+            const body = await readBody(req),
+              input = draftMatch[2]
+                ? z.object({ version: z.number().int().min(1) }).parse(body)
+                : draftInputSchema.parse(body);
+            if (row && input.version !== row.version)
+              throw new HttpError(
+                409,
+                "This draft was changed in another tab. Reload before saving.",
+              );
+            if ("warehouseId" in input && input.warehouseId)
+              await getWarehouse(input.warehouseId, user);
+            if (!row) {
+              const count = await db
+                .prepare("SELECT payload FROM design_drafts WHERE tenant_id=?")
+                .all(user.tenant_id);
+              if (
+                (count as { payload: string }[]).filter(
+                  (r) => !(JSON.parse(r.payload) as DesignDraft).completed,
+                ).length >= 200
+              )
+                throw new HttpError(
+                  422,
+                  "This workspace has reached its draft limit.",
+                );
+            }
+            const at = new Date().toISOString(),
+              old = row ? (JSON.parse(row.payload) as DesignDraft) : undefined;
+            const draft: DesignDraft = draftMatch[2]
+              ? {
+                  ...old!,
+                  version: row!.version + 1,
+                  updatedAt: at,
+                  completed: true,
+                }
+              : {
+                  ...(input as DraftInput),
+                  id: draftId || randomUUID(),
+                  version: (row?.version || 0) + 1,
+                  createdAt: old?.createdAt || at,
+                  updatedAt: at,
+                  completed: false,
+                };
+            if (row) {
+              const result = await db
+                .prepare(
+                  "UPDATE design_drafts SET payload=?,version=?,updated_at=? WHERE id=? AND tenant_id=? AND version=?",
+                )
+                .run(
+                  JSON.stringify(draft),
+                  draft.version,
+                  at,
+                  draft.id,
+                  user.tenant_id,
+                  row.version,
+                );
+              if (!result.changes)
+                throw new HttpError(
+                  409,
+                  "Draft changed. Reload before saving.",
+                );
+            } else
+              await db
+                .prepare("INSERT INTO design_drafts VALUES (?,?,?,?,?)")
+                .run(
+                  draft.id,
+                  user.tenant_id,
+                  draft.version,
+                  JSON.stringify(draft),
+                  at,
+                );
+            json({ draft }, row ? 200 : 201);
+            return;
+          }
+        }
         if (pathname === "/api/v1/warehouses/archived" && method === "GET") {
           const rows = (await db
             .prepare(
@@ -396,8 +516,7 @@ export function createApplication(
               "SELECT payload,version FROM archived_warehouses WHERE id=? AND tenant_id=?",
             )
             .get(restoreMatch[1], user.tenant_id)) as
-            | { payload: string; version: number }
-            | undefined;
+            { payload: string; version: number } | undefined;
           if (!row) throw new HttpError(404, "Archived warehouse not found.");
           if (body.version !== row.version)
             throw new HttpError(
@@ -573,6 +692,50 @@ export function createApplication(
           });
           return;
         }
+        const automationMatch = pathname.match(
+          /^\/api\/v1\/warehouses\/([a-zA-Z0-9-]+)\/automation$/,
+        );
+        if (automationMatch && method === "POST") {
+          const warehouse = await getWarehouse(automationMatch[1], user);
+          const body = z
+            .object({
+              version: z.number().int().min(1),
+              command: automationCommandSchema,
+            })
+            .parse(await readBody(req));
+          if (warehouse.version !== body.version)
+            throw new HttpError(
+              409,
+              "This warehouse changed. Reload before changing the simulation.",
+            );
+          try {
+            warehouse.automation = applyAutomation(
+              warehouse.config,
+              warehouse.automation,
+              body.command,
+              () => randomUUID(),
+            );
+          } catch (error) {
+            throw new HttpError(
+              422,
+              error instanceof Error
+                ? error.message
+                : "Simulation command rejected.",
+            );
+          }
+          warehouse.events.push(
+            event(
+              user,
+              warehouse.id,
+              "Simulation: " + body.command.type,
+              "Local route simulation only. No inventory or hardware command issued.",
+            ),
+          );
+          json({
+            warehouse: await saveWarehouse(warehouse, user, body.version),
+          });
+          return;
+        }
         const match = pathname.match(
           /^\/api\/v1\/warehouses\/([a-zA-Z0-9-]+)(?:\/records(?:\/([^/]+))?)?$/,
         );
@@ -603,6 +766,8 @@ export function createApplication(
             const configIssue = validateRecordSet(w.records, config);
             if (configIssue) throw new HttpError(422, configIssue);
             w.config = config;
+            // A geometry revision invalidates all simulated positions and queued circuits.
+            w.automation = undefined;
             w.events.push(
               event(
                 user,

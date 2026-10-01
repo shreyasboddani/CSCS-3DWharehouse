@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { designSchema, generateDesignLayout } from "./design";
 
 export const templates = [
   {
@@ -59,6 +60,7 @@ export const zones: {
   },
 ];
 export const configSchema = z.object({
+  design: designSchema.optional(),
   name: z.string().trim().min(2).max(80),
   site: z.string().trim().max(120),
   template: z.enum(["through", "u-flow", "l-flow"]),
@@ -151,6 +153,8 @@ export const defaultConfig: WarehouseConfig = {
   packStations: 3,
 };
 export type Location = {
+  floorId?: string;
+  moduleId?: string;
   id: string;
   code: string;
   zone: Zone;
@@ -165,6 +169,13 @@ export type Location = {
   bin?: number;
 };
 export type Rack = {
+  floorId?: string;
+  moduleId?: string;
+  rotation?: number;
+  y?: number;
+  bays?: number;
+  levels?: number;
+  bins?: number;
   x: number;
   z: number;
   length: number;
@@ -183,6 +194,7 @@ export type Layout = {
 };
 const pad = (value: number) => String(value).padStart(2, "0");
 export function generateLayout(c: WarehouseConfig): Layout {
+  if (c.design) return generateDesignLayout(c);
   const pitch = c.aisleWidth + 2.4;
   const requiredWidth = c.aisles * pitch + (c.template === "l-flow" ? 13 : 7);
   const requiredDepth = c.bays * 2.4 + (c.template === "through" ? 20 : 16);
@@ -518,6 +530,7 @@ export type Activity = {
   actor: string;
 };
 export type Warehouse = {
+  automation?: import("./automation").AutomationState;
   id: string;
   config: WarehouseConfig;
   records: OperationalRecord[];
@@ -648,7 +661,27 @@ export function validateRecordSet(
     stock.units.add(r.unit || "units");
     stockByLocation.set(r.locationId, stock);
   }
-  for (const rule of config.locationRules || []) {
+  const designModules = new Map(
+    config.design?.floors.flatMap((f) => f.modules).map((m) => [m.id, m]) || [],
+  );
+  const designRules = config.design
+    ? generateLayout(config).locations.flatMap((l) => {
+        const module = designModules.get(l.moduleId || "");
+        return l.zone === "storage" && module?.binCapacity
+          ? [
+              {
+                locationId: l.id,
+                capacity: module.binCapacity,
+                unit: module.unit,
+              },
+            ]
+          : [];
+      })
+    : [];
+  const rules = new Map(designRules.map((r) => [r.locationId, r]));
+  for (const rule of config.locationRules || [])
+    rules.set(rule.locationId, rule);
+  for (const rule of rules.values()) {
     const stock = stockByLocation.get(rule.locationId);
     if (stock && [...stock.units].some((unit) => unit !== rule.unit))
       return (
