@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { designSchema, generateDesignLayout } from "./design";
+import { formatFeet } from "./units";
 
 export const templates = [
   {
@@ -61,56 +62,57 @@ export const zones: {
 ];
 export const configSchema = z.object({
   design: designSchema.optional(),
+  autoFitAisles: z.boolean().optional(),
   name: z.string().trim().min(2).max(80),
   site: z.string().trim().max(120),
   template: z.enum(["through", "u-flow", "l-flow"]),
-  width: z.number().min(24).max(140),
-  depth: z.number().min(24).max(140),
+  width: z.number().min(1),
+  depth: z.number().min(1),
   aisles: z.number().int().min(1),
   bays: z.number().int().min(1),
-  levels: z.number().int().min(1).max(6),
-  bins: z.number().int().min(1).max(4),
-  aisleWidth: z.number().min(2.4).max(6),
+  levels: z.number().int().min(1),
+  bins: z.number().int().min(1),
+  aisleWidth: z.number().min(0.6),
   inboundDoors: z.number().int().min(1),
   outboundDoors: z.number().int().min(1),
-  stagingLanes: z.number().int().min(1).max(12),
-  packStations: z.number().int().min(1).max(12),
-  qualityStations: z.number().int().min(0).max(4).optional(),
-  returnsLanes: z.number().int().min(0).max(4).optional(),
-  ceilingHeight: z.number().min(6).max(60).optional(),
-  yardDepth: z.number().min(10).max(30).optional(),
+  stagingLanes: z.number().int().min(1),
+  packStations: z.number().int().min(1),
+  qualityStations: z.number().int().min(0).optional(),
+  returnsLanes: z.number().int().min(0).optional(),
+  ceilingHeight: z.number().min(3).optional(),
+  yardDepth: z.number().min(3).optional(),
   rackFinish: z.enum(["blue", "graphite", "teal"]).optional(),
   floorFinish: z.enum(["concrete", "polished", "slate"]).optional(),
   layoutOffsets: z
     .object({
       inbound: z
         .object({
-          x: z.number().min(-100).max(100),
-          z: z.number().min(-100).max(100),
+          x: z.number(),
+          z: z.number(),
         })
         .optional(),
       staging: z
         .object({
-          x: z.number().min(-100).max(100),
-          z: z.number().min(-100).max(100),
+          x: z.number(),
+          z: z.number(),
         })
         .optional(),
       storage: z
         .object({
-          x: z.number().min(-100).max(100),
-          z: z.number().min(-100).max(100),
+          x: z.number(),
+          z: z.number(),
         })
         .optional(),
       packing: z
         .object({
-          x: z.number().min(-100).max(100),
-          z: z.number().min(-100).max(100),
+          x: z.number(),
+          z: z.number(),
         })
         .optional(),
       outbound: z
         .object({
-          x: z.number().min(-100).max(100),
-          z: z.number().min(-100).max(100),
+          x: z.number(),
+          z: z.number(),
         })
         .optional(),
     })
@@ -123,7 +125,6 @@ export const configSchema = z.object({
         unit: z.string().trim().min(1).max(20),
       }),
     )
-    .max(12000)
     .optional(),
   locationMappings: z
     .array(
@@ -132,7 +133,6 @@ export const configSchema = z.object({
         locationId: z.string().min(1).max(64),
       }),
     )
-    .max(12000)
     .optional(),
 });
 export type WarehouseConfig = z.infer<typeof configSchema>;
@@ -151,7 +151,8 @@ export const defaultConfig: WarehouseConfig = {
   outboundDoors: 2,
   stagingLanes: 4,
   packStations: 3,
-  ceilingHeight: 12,
+  ceilingHeight: 15.24,
+  autoFitAisles: true,
 };
 export type Location = {
   floorId?: string;
@@ -198,7 +199,90 @@ export function fitAisleLength(c: WarehouseConfig): WarehouseConfig {
   // Leave room for loading, packing and walking at the ends of the racks.
   const endSpace = c.template === "through" ? 20 : 16;
   const offset = Math.abs(c.layoutOffsets?.storage?.z || 0);
-  return { ...c, bays: Math.max(1, Math.floor((c.depth - endSpace - offset * 2) / 2.4)) };
+  return {
+    ...c,
+    bays: Math.max(1, Math.floor((c.depth - endSpace - offset * 2) / 2.4)),
+  };
+}
+/** Preserve counts and logical IDs; grow only the space they physically require. */
+export function arrangeTemplate(
+  input: WarehouseConfig,
+  fitLength = input.autoFitAisles === true,
+): WarehouseConfig {
+  if (input.design) return input;
+  const c = { ...input, layoutOffsets: undefined };
+  const split = c.template !== "through";
+  const receiving = Math.max(c.inboundDoors * 4, c.stagingLanes * 2.2);
+  const shipping = c.outboundDoors * 4;
+  c.width = Math.max(
+    c.width,
+    c.aisles * (c.aisleWidth + 2.4) +
+      (c.qualityStations || c.returnsLanes
+        ? 18
+        : c.template === "l-flow"
+          ? 13
+          : 7),
+    split ? receiving * 2 + 6 : receiving + 6,
+    c.template === "u-flow"
+      ? shipping * 2 + 6
+      : c.template === "through"
+        ? shipping + 6
+        : 0,
+    c.template === "u-flow"
+      ? c.packStations * 5.6 + 8
+      : c.template === "through"
+        ? c.packStations * 2.8 + 8
+        : 0,
+  );
+  c.depth = Math.max(
+    c.depth,
+    c.bays * 2.4 + (c.template === "through" ? 20 : 16),
+    c.template === "l-flow"
+      ? Math.max(c.outboundDoors * 4 + 8, c.packStations * 2.8 + 10)
+      : 0,
+    Math.max(c.qualityStations || 0, c.returnsLanes || 0) * 1.8 + 8,
+  );
+  c.ceilingHeight = Math.max(c.ceilingHeight || 12, c.levels * 1.25 + 2.4);
+  return fitLength ? fitAisleLength(c) : c;
+}
+export function updateTemplate(
+  c: WarehouseConfig,
+  patch: Partial<WarehouseConfig>,
+  automatic = true,
+) {
+  const next = { ...c, ...patch };
+  if (!automatic || next.design) return next;
+  if (
+    !Object.keys(patch).some((key) =>
+      [
+        "width",
+        "depth",
+        "aisles",
+        "bays",
+        "levels",
+        "bins",
+        "aisleWidth",
+        "inboundDoors",
+        "outboundDoors",
+        "stagingLanes",
+        "packStations",
+        "qualityStations",
+        "returnsLanes",
+        "ceilingHeight",
+        "template",
+        "autoFitAisles",
+      ].includes(key),
+    )
+  )
+    return next;
+  // A requested shorter building also shortens aisles; never silently reduce the aisle count.
+  if (
+    (patch.depth !== undefined || patch.template !== undefined) &&
+    next.autoFitAisles
+  )
+    next.bays = fitAisleLength(next).bays;
+  if (patch.bays !== undefined) next.autoFitAisles = false;
+  return arrangeTemplate(next);
 }
 export function generateLayout(c: WarehouseConfig): Layout {
   if (c.design) return generateDesignLayout(c);
@@ -206,25 +290,38 @@ export function generateLayout(c: WarehouseConfig): Layout {
   const requiredWidth = c.aisles * pitch + (c.template === "l-flow" ? 13 : 7);
   const requiredDepth = c.bays * 2.4 + (c.template === "through" ? 20 : 16);
   const errors: string[] = [];
-  // Count limits are based on physical space and the address budget, rather
-  // than fixed aisle/door/bay caps. Avoid allocating huge invalid previews.
-  if (c.aisles * 2 * c.bays * c.levels * c.bins + c.inboundDoors + c.outboundDoors +
-      c.stagingLanes + c.packStations + (c.qualityStations || 0) + (c.returnsLanes || 0) > 12000 ||
-      c.aisles > Math.floor(c.width / pitch) || c.bays > Math.floor(c.depth / 2.4) ||
-      c.inboundDoors > Math.floor(c.width / 4) ||
-      c.outboundDoors > Math.floor((c.template === "l-flow" ? c.depth : c.width) / 4))
+  // Reject physically impossible previews before allocating addresses. No fixed count ceiling.
+  if (
+    c.aisles > Math.floor(c.width / pitch) ||
+    c.bays > Math.floor(c.depth / 2.4) ||
+    c.inboundDoors > Math.floor(c.width / 4) ||
+    c.outboundDoors >
+      Math.floor((c.template === "l-flow" ? c.depth : c.width) / 4)
+  )
     return {
-      locations: [], racks: [], capacity: 0, requiredWidth, requiredDepth,
-      centers: { inbound: [0, -c.depth / 2], staging: [0, -c.depth / 2 + 6], storage: [0, 0], packing: [0, c.depth / 2 - 7], outbound: [0, c.depth / 2] },
-      errors: ["These shelves or doors do not fit. Use fewer, make the building bigger, or keep the design within 12,000 storage spaces."],
+      locations: [],
+      racks: [],
+      capacity: c.aisles * 2 * c.bays * c.levels * c.bins,
+      requiredWidth,
+      requiredDepth,
+      centers: {
+        inbound: [0, -c.depth / 2],
+        staging: [0, -c.depth / 2 + 6],
+        storage: [0, 0],
+        packing: [0, c.depth / 2 - 7],
+        outbound: [0, c.depth / 2],
+      },
+      errors: [
+        "The shelves or doors need more room. Choose Make everything fit to grow the building.",
+      ],
     };
   if (c.width < requiredWidth)
     errors.push(
-      `This rack configuration needs at least ${requiredWidth.toFixed(1)} m of width. Increase the footprint or reduce aisles.`,
+      `Your aisles need ${formatFeet(requiredWidth)} ft of width. Choose Make everything fit.`,
     );
   if (c.depth < requiredDepth)
     errors.push(
-      `This bay configuration needs at least ${requiredDepth.toFixed(1)} m of depth. Increase the footprint or reduce bays.`,
+      `Your shelves need ${formatFeet(requiredDepth)} ft of building length. Choose Make everything fit.`,
     );
   const doorSpan = c.template === "u-flow" ? c.width / 2 - 3 : c.width - 6;
   if (c.inboundDoors * 4 > doorSpan)
@@ -416,8 +513,8 @@ export function generateLayout(c: WarehouseConfig): Layout {
   if (c.ceilingHeight !== undefined && c.ceilingHeight < requiredHeight)
     errors.push(
       "Rack levels need at least " +
-        requiredHeight.toFixed(1) +
-        " m of ceiling clearance.",
+        formatFeet(requiredHeight) +
+        " ft of roof height.",
     );
   if (
     racks.some(

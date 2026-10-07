@@ -67,7 +67,11 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   pmrem.dispose();
   scene.add(new T.HemisphereLight("#eef7ff", "#8196ac", 0.8));
   const sun = new T.DirectionalLight("#fff5e3", 2.1);
-  sun.position.set(-c.width * 0.45, 50, c.depth * 0.45);
+  sun.position.set(
+    -c.width * 0.45,
+    Math.max(50, world.wallHeight + Math.max(c.width, c.depth)),
+    c.depth * 0.45,
+  );
   sun.castShadow = !compact;
   sun.shadow.mapSize.set(2048, 2048);
   const extent = Math.max(c.width, c.depth) * 0.7;
@@ -77,7 +81,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     top: extent,
     bottom: -extent,
     near: 1,
-    far: 160,
+    far: Math.max(160, Math.max(c.width, c.depth) * 5 + world.wallHeight * 2),
   });
   sun.shadow.normalBias = 0.035;
   sun.shadow.bias = -0.0002;
@@ -91,8 +95,8 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     light.position.set(x, world.wallHeight - 1, z);
     scene.add(light);
   }
-  const size = Math.max(c.width, c.depth),
-    camera = new T.PerspectiveCamera(42, 1, 0.1, 600);
+  const size = Math.max(c.width, c.depth, world.wallHeight),
+    camera = new T.PerspectiveCamera(42, 1, 0.1, Math.max(600, size * 10));
   camera.position.set(size * 0.77, size * 0.68, size * 0.78);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, 1, 0);

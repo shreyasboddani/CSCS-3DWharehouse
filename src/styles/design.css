@@ -425,6 +425,12 @@
 .design-draft-list {
   margin: 36px 0;
 }
+.builder-assist { padding: 16px 18px; margin: 20px 0; border: 1px solid #d8e7f1; border-radius: 12px; background: #f3f9fd; }
+.builder-assist label { display: flex; align-items: center; gap: 10px; color: #214c76; font-weight: 600; }
+.builder-assist label input { width: 17px; height: 17px; accent-color: #3a78bf; }
+.builder-assist p { color: #5a728a; font-size: 13px; line-height: 1.6; margin: 10px 0; }
+.builder-assist strong { font-size: 13px; color: #345b7b; }
+.builder-assist .text-button { float: right; }
 .design-waypoint {
   display: grid;
   grid-template-columns: 20px 1fr 1fr 28px;

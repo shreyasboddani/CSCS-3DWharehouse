@@ -1,3 +1,4 @@
+import { formatFeet } from "../domain/units";
 import { lazy, Suspense, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Brand, Icon } from "./ui";
@@ -111,7 +112,8 @@ export function Landing() {
             <div className="launch-scene-note">
               <span>01 / EXAMPLE FACILITY</span>
               <strong>
-                {sample.config.width} × {sample.config.depth} m
+                {formatFeet(sample.config.width)} ×{" "}
+                {formatFeet(sample.config.depth)} ft
               </strong>
               <small>Drag to orbit · Click to inspect</small>
             </div>

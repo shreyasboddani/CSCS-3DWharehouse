@@ -580,7 +580,7 @@ export function LocationMappings({ warehouse, onClose, onSaved }: Props) {
             ))}
           </select>
         </label>
-        <button className="button small" disabled={mappings.length >= 12000}>
+        <button className="button small">
           Add mapping
         </button>
       </form>

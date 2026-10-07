@@ -1,4 +1,5 @@
-import { squareFeet } from "./domain/units";
+import { NumberInput } from "./app/NumberInput";
+import { squareFeet, feet, meters, formatFeet } from "./domain/units";
 import { DraftList } from "./app/DraftList";
 import { AutomationPanel } from "./app/AutomationPanel";
 import type { DesignDraft, DraftInput } from "./domain/drafts";
@@ -28,8 +29,9 @@ import {
 import { api, useSession, returnToPath } from "./app/service";
 import type { User } from "./app/service";
 import {
+  arrangeTemplate,
+  updateTemplate,
   defaultConfig,
-  fitAisleLength,
   templates,
   generateLayout,
   zones,
@@ -441,7 +443,8 @@ function Dashboard() {
                 <Icon name="arrow" />
                 <div className="card-meta">
                   <span>
-                    {w.config.width} × {w.config.depth} m
+                    {formatFeet(w.config.width)} × {formatFeet(w.config.depth)}{" "}
+                    ft
                   </span>
                   <span>{generateLayout(w.config).capacity} locations</span>
                   <span>
@@ -474,90 +477,41 @@ const numericFields: Record<
   }[]
 > = {
   0: [
-    { key: "width", label: "Building width (m)", min: 24, max: 140 },
-    { key: "depth", label: "Building length (m)", min: 24, max: 140 },
+    { key: "width", label: "Building width (ft)", min: 1 },
+    { key: "depth", label: "Building length (ft)", min: 1 },
     { key: "inboundDoors", label: "Doors for arriving trucks", min: 1 },
-    { key: "stagingLanes", label: "Waiting areas for boxes", min: 1, max: 12 },
+    { key: "stagingLanes", label: "Waiting areas for boxes", min: 1 },
     {
       key: "qualityStations",
       label: "Quality inspection stations",
       min: 0,
-      max: 4,
     },
-    { key: "returnsLanes", label: "Returns lanes", min: 0, max: 4 },
+    { key: "returnsLanes", label: "Returns lanes", min: 0 },
     {
       key: "ceilingHeight",
-      label: "Roof height (m)",
+      label: "Roof height (ft)",
       min: 6,
-      max: 60,
       step: 0.1,
     },
-    { key: "yardDepth", label: "Truck yard depth (m)", min: 10, max: 30 },
+    { key: "yardDepth", label: "Truck yard depth (ft)", min: 3 },
   ],
   1: [
     { key: "aisles", label: "Number of aisles", min: 1 },
     { key: "bays", label: "Shelf sections along each aisle", min: 1 },
-    { key: "levels", label: "Shelves stacked high", min: 1, max: 6 },
-    { key: "bins", label: "Spaces on each shelf", min: 1, max: 4 },
+    { key: "levels", label: "Shelves stacked high", min: 1 },
+    { key: "bins", label: "Spaces on each shelf", min: 1 },
     {
       key: "aisleWidth",
-      label: "Clear aisle width (m)",
+      label: "Walking space between shelves (ft)",
       min: 2.4,
-      max: 6,
       step: 0.1,
     },
   ],
   2: [
-    { key: "packStations", label: "Packing tables", min: 1, max: 12 },
+    { key: "packStations", label: "Packing tables", min: 1 },
     { key: "outboundDoors", label: "Doors for leaving trucks", min: 1 },
   ],
 };
-function NumberField({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  value: number;
-  min: number;
-  max?: number;
-  step: number;
-  onChange: (value: number) => void;
-}) {
-  const [text, setText] = useState(String(value));
-  const [previous, setPrevious] = useState(value);
-  if (previous !== value) {
-    setPrevious(value);
-    setText(String(value));
-  }
-  return (
-    <input
-      type="number"
-      min={min}
-      max={max}
-      step={step}
-      value={text}
-      onChange={(e) => {
-        setText(e.target.value);
-        const n = Number(e.target.value);
-        if (
-          e.target.value !== "" &&
-          n >= min &&
-          n <= (max ?? Number.MAX_SAFE_INTEGER) &&
-          (step !== 1 || Number.isInteger(n))
-        )
-          onChange(n);
-      }}
-      onBlur={() => {
-        const n = Math.max(min, Math.min(max ?? Number.MAX_SAFE_INTEGER, Number(text) || value));
-        const result = step === 1 ? Math.round(n) : Math.round(n * 10) / 10;
-        setText(String(result));
-        onChange(result);
-      }}
-    />
-  );
-}
 function Builder() {
   const [draftParams, setDraftParams] = useSearchParams();
   const draftQuery = draftParams.get("draft");
@@ -574,6 +528,8 @@ function Builder() {
     [draftStatus, setDraftStatus] = useState("");
 
   const [designOpen, setDesignOpen] = useState(false);
+  const [autoArrange, setAutoArrange] = useState(true);
+  const [undoConfig, setUndoConfig] = useState<WarehouseConfig | null>(null);
   const [builderMode, setBuilderMode] = useState<ViewMode>("orbit");
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const { id } = useParams(),
@@ -655,8 +611,12 @@ function Builder() {
     [id, setDraftParams],
   );
   const layout = generateLayout(config);
+  const changeConfig = (next: WarehouseConfig) => {
+    setUndoConfig(config);
+    setConfig(next);
+  };
   const update = (key: keyof WarehouseConfig, value: string | number) =>
-    setConfig((c) => ({ ...c, [key]: value }));
+    changeConfig(updateTemplate(config, { [key]: value }, autoArrange));
   async function save() {
     setBusy(true);
     setError("");
@@ -685,25 +645,43 @@ function Builder() {
     }
   }
   const extraFields = new Set<keyof WarehouseConfig>([
-    "qualityStations", "returnsLanes", "yardDepth", "bins", "aisleWidth",
+    "qualityStations",
+    "returnsLanes",
+    "yardDepth",
+    "bins",
+    "aisleWidth",
   ]);
-  const numberControl = (f: (typeof numericFields)[number][number]) => (
-    <label key={f.key}>
-      {f.label}
-      <NumberField
-        value={Number(
-          config[f.key] ??
-            (f.key === "ceilingHeight"
-              ? Math.max(12, config.levels * 1.25 + 2.4)
-              : f.key === "yardDepth" ? 12 : 0),
-        )}
-        min={f.min}
-        max={f.max}
-        step={f.step || 1}
-        onChange={(value) => update(f.key, value)}
-      />
-    </label>
-  );
+  const lengthFields = new Set<keyof WarehouseConfig>([
+    "width",
+    "depth",
+    "ceilingHeight",
+    "yardDepth",
+    "aisleWidth",
+  ]);
+  const numberControl = (f: (typeof numericFields)[number][number]) => {
+    const length = lengthFields.has(f.key);
+    const value = Number(
+      config[f.key] ??
+        (f.key === "ceilingHeight"
+          ? Math.max(12, config.levels * 1.25 + 2.4)
+          : f.key === "yardDepth"
+            ? 12
+            : 0),
+    );
+    return (
+      <label key={f.key}>
+        {f.label}
+        <NumberInput
+          value={length ? feet(value) : value}
+          min={length ? feet(f.min) : f.min}
+          max={f.max}
+          step={length ? 1 : f.step || 1}
+          integer={!length}
+          onChange={(n) => update(f.key, length ? meters(n) : n)}
+        />
+      </label>
+    );
+  };
   const steps = ["Building", "Shelves", "Packing & trucks", "Finish"];
   if (designOpen)
     return (
@@ -903,36 +881,94 @@ function Builder() {
             </>
           )}
           {step < 3 && (
-            <div className="field-grid">
-              {numericFields[step].filter(f => !extraFields.has(f.key)).map(numberControl)}
+            <div className="builder-assist">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={autoArrange}
+                  onChange={(e) => setAutoArrange(e.target.checked)}
+                />
+                Arrange things for me
+              </label>
+              <p>
+                Add more shelves or doors and we grow the building to fit.
+                Changing the length adjusts the shelves; doors and work areas
+                follow the walls.
+              </p>
+              <strong>
+                {formatFeet(config.width)} ft wide by {formatFeet(config.depth)}{" "}
+                ft long
+              </strong>
+              <button
+                className="text-button"
+                disabled={!undoConfig}
+                onClick={() => {
+                  if (undoConfig) {
+                    setConfig(undoConfig);
+                    setUndoConfig(null);
+                  }
+                }}
+              >
+                Undo last change
+              </button>
             </div>
           )}
-          {step < 3 && numericFields[step].some(f => extraFields.has(f.key)) && (
-            <details className="builder-extra-options">
-              <summary>More choices</summary>
-              <div className="field-grid">
-                {numericFields[step].filter(f => extraFields.has(f.key)).map(numberControl)}
-              </div>
-            </details>
+          {step < 3 && (
+            <div className="field-grid">
+              {numericFields[step]
+                .filter((f) => !extraFields.has(f.key))
+                .map(numberControl)}
+            </div>
           )}
+          {step < 3 &&
+            numericFields[step].some((f) => extraFields.has(f.key)) && (
+              <details className="builder-extra-options">
+                <summary>More choices</summary>
+                <div className="field-grid">
+                  {numericFields[step]
+                    .filter((f) => extraFields.has(f.key))
+                    .map(numberControl)}
+                </div>
+              </details>
+            )}
           {step === 0 && (
             <div className="info-box">
-              <strong>{squareFeet(config.width * config.depth)} ft² of floor space</strong>
-              <p>Size and height are in meters. Floor area is in square feet.</p>
-              <button className="button secondary small" onClick={() => setDesignOpen(true)}>
+              <strong>
+                {squareFeet(config.width * config.depth)} ft² of floor space
+              </strong>
+              <p>
+                All measurements are in feet. Enter a size, then click away or
+                press Enter.
+              </p>
+              <button
+                className="button secondary small"
+                onClick={() => setDesignOpen(true)}
+              >
                 Choose a shape or draw your own
               </button>
-              <p>Pick a rectangle, L or T shape. Drag the corners to change it.</p>
+              <p>
+                Pick a rectangle, L or T shape. Drag the corners to change it.
+              </p>
             </div>
           )}
           {step === 1 && (
             <div className="info-box">
               <strong>Make aisles as long as the building allows</strong>
-              <p>Each shelf section is 2.4 m long. We leave space at the ends for people and boxes.</p>
-              <button className="button secondary small" onClick={() => setConfig(fitAisleLength)}>
+              <p>
+                Each shelf section is about 8 ft long. We keep room at both ends
+                for walking and work.
+              </p>
+              <button
+                className="button secondary small"
+                onClick={() =>
+                  changeConfig(
+                    arrangeTemplate({ ...config, autoFitAisles: true }, true),
+                  )
+                }
+              >
                 Fit aisle length to building
               </button>
-              <p>Current aisle length: {(config.bays * 2.4).toFixed(1)} m.</p>
+              <p>Current aisle length: {formatFeet(config.bays * 2.4)} ft.</p>
             </div>
           )}
           {step === 1 && (
@@ -963,9 +999,7 @@ function Builder() {
           )}
           {step === 1 && (
             <div className="info-box">
-              <strong>
-                {layout.capacity.toLocaleString()} storage spaces
-              </strong>
+              <strong>{layout.capacity.toLocaleString()} storage spaces</strong>
               <p>
                 {config.aisles} aisles × 2 faces × {config.bays} bays ×{" "}
                 {config.levels} levels × {config.bins} bins
@@ -989,7 +1023,7 @@ function Builder() {
               <div>
                 <dt>Footprint</dt>
                 <dd>
-                  {config.width} × {config.depth} m
+                  {formatFeet(config.width)} × {formatFeet(config.depth)} ft
                 </dd>
               </div>
               <div>
@@ -1018,28 +1052,7 @@ function Builder() {
               ))}
               <button
                 className="text-button"
-                onClick={() =>
-                  setConfig((c) => ({
-                    ...c,
-                    width: Math.min(
-                      140,
-                      Math.ceil(
-                        Math.max(
-                          c.width,
-                          layout.requiredWidth,
-                          c.inboundDoors * 4 + 8,
-                          c.outboundDoors * 4 + 8,
-                          c.packStations * 2.8 + 8,
-                          c.stagingLanes * 2.2 + 8,
-                        ),
-                      ),
-                    ),
-                    depth: Math.min(
-                      140,
-                      Math.ceil(Math.max(c.depth, layout.requiredDepth)),
-                    ),
-                  }))
-                }
+                onClick={() => changeConfig(arrangeTemplate(config))}
               >
                 Make the building bigger →
               </button>
@@ -1136,9 +1149,7 @@ function Builder() {
           />
           <div className="preview-stats">
             <div>
-              <strong>
-                {squareFeet(config.width * config.depth)} ft²
-              </strong>
+              <strong>{squareFeet(config.width * config.depth)} ft²</strong>
               <span>Building footprint</span>
             </div>
             <div>
@@ -1744,8 +1755,8 @@ function Twin({ preview = false }: { preview?: boolean }) {
           <h1>{warehouse.config.name}</h1>
           <p>
             {warehouse.config.site} <span>·</span> {warehouse.config.width} ×{" "}
-            {warehouse.config.depth} m <span>·</span> {layout.capacity} storage
-            locations
+            {formatFeet(warehouse.config.depth)} ft <span>·</span>{" "}
+            {layout.capacity} storage locations
           </p>
         </div>
         <div className="actions">
@@ -2328,7 +2339,12 @@ function Twin({ preview = false }: { preview?: boolean }) {
                   download(
                     warehouse.config.name + "-layout.json",
                     JSON.stringify(
-                      { config: warehouse.config, locations: layout.locations },
+                      {
+                        units: "meters",
+                        displayUnits: "feet",
+                        config: warehouse.config,
+                        locations: layout.locations,
+                      },
                       null,
                       2,
                     ),

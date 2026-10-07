@@ -1,3 +1,4 @@
+import { formatFeet } from "../domain/units";
 import { useEffect, useRef, useState } from "react";
 import { createWarehouseScene } from "./createWarehouseScene";
 import type { ViewMode } from "./createWarehouseScene";
@@ -133,7 +134,7 @@ export default function WarehouseScene({
               <dl>
                 <dt>Position</dt>
                 <dd>
-                  {inspected.x.toFixed(1)}, {inspected.z.toFixed(1)} m
+                  {formatFeet(inspected.x)}, {formatFeet(inspected.z)} ft
                 </dd>
                 <dt>Task</dt>
                 <dd>{inspected.task}</dd>
@@ -207,7 +208,7 @@ export default function WarehouseScene({
           <div className="scene-compass">
             <span>N</span>
             <i />
-            <span>TRUE SCALE / METERS</span>
+            <span>TRUE SCALE / FEET</span>
           </div>
           {mode === "walk" && (
             <div className="walk-pad" aria-label="Walking controls">

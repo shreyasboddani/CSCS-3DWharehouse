@@ -16,10 +16,14 @@ export function aisleNumber(number: number, x: number, y: number, z: number) {
   ctx.fillText(`Aisle ${number}`, 256, 80);
   const texture = new T.CanvasTexture(canvas);
   texture.colorSpace = T.SRGBColorSpace;
-  const material = new T.SpriteMaterial({ map: texture, depthWrite: false });
+  const material = new T.SpriteMaterial({
+    map: texture,
+    depthWrite: false,
+    sizeAttenuation: false,
+  });
   const sprite = new T.Sprite(material);
   sprite.name = `Floating aisle ${number}`;
   sprite.position.set(x, y, z);
-  sprite.scale.set(3.2, 1, 1);
+  sprite.scale.set(0.09, 0.028, 1);
   return { sprite, texture, material };
 }

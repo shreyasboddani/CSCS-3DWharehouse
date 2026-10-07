@@ -6,13 +6,10 @@ const draftDesign = designSchema.extend({
     .array(
       floorSchema.extend({
         name: z.string().max(80),
-        modules: z
-          .array(moduleSchema.extend({ label: z.string().max(80) }))
-          .max(400),
+        modules: z.array(moduleSchema.extend({ label: z.string().max(80) })),
       }),
     )
-    .min(1)
-    .max(4),
+    .min(1),
 });
 export const draftInputSchema = z.object({
   config: configSchema.extend({
@@ -27,11 +24,11 @@ export const draftInputSchema = z.object({
       outlinePoints: z
         .array(
           z.object({
-            x: z.number().min(-70).max(70),
-            z: z.number().min(-70).max(70),
+            x: z.number(),
+            z: z.number(),
           }),
         )
-        .max(32)
+
         .optional(),
     })
     .default({ mode: "studio" }),

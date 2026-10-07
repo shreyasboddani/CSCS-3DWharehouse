@@ -20,10 +20,35 @@ import {
 const config = () => ({ ...defaultConfig, name: "Design tests" });
 
 test("upper floor edges cannot bridge even a very narrow concave cutout", () => {
-  const outer = [{x:-10,z:-10},{x:10,z:-10},{x:10,z:10},{x:0.01,z:10},{x:0.01,z:0},{x:0,z:0},{x:0,z:10},{x:-10,z:10}];
-  const inner = [{x:-5,z:1},{x:5,z:1},{x:5,z:5},{x:-5,z:5}];
+  const outer = [
+    { x: -10, z: -10 },
+    { x: 10, z: -10 },
+    { x: 10, z: 10 },
+    { x: 0.01, z: 10 },
+    { x: 0.01, z: 0 },
+    { x: 0, z: 0 },
+    { x: 0, z: 10 },
+    { x: -10, z: 10 },
+  ];
+  const inner = [
+    { x: -5, z: 1 },
+    { x: 5, z: 1 },
+    { x: 5, z: 5 },
+    { x: -5, z: 5 },
+  ];
   assert.equal(outlineWithin(inner, outer), false);
-  assert.equal(outlineWithin([{x:-5,z:-5},{x:5,z:-5},{x:5,z:-1},{x:-5,z:-1}], outer), true);
+  assert.equal(
+    outlineWithin(
+      [
+        { x: -5, z: -5 },
+        { x: 5, z: -5 },
+        { x: 5, z: -1 },
+        { x: -5, z: -1 },
+      ],
+      outer,
+    ),
+    true,
+  );
 });
 test("custom conversion preserves every canonical address for all templates", () => {
   for (const t of templates) {
@@ -121,7 +146,7 @@ test("area fill and even spacing create deterministic module placements", () => 
     [-5, 0, 5],
   );
 });
-test("overlarge designs fail before allocating bins and workflow links cannot dangle", () => {
+test("large designs retain addresses and workflow links cannot dangle", () => {
   const c = config(),
     design = designFromLayout(c, generateLayout(c));
   design.floors[0].modules = Array.from({ length: 30 }, (_, i) => ({
@@ -131,8 +156,8 @@ test("overlarge designs fail before allocating bins and workflow links cannot da
     bins: 4,
   }));
   const l = generateLayout({ ...c, design });
-  assert.equal(l.locations.length, 0);
-  assert.match(l.errors[0], /12,000/);
+  assert.equal(l.locations.length, 28800);
+  assert.ok(l.errors.some((e) => /overlaps/.test(e)));
   design.floors[0].modules = [
     { ...createModule("amr", "r", 1), sourceId: "removed" },
   ];

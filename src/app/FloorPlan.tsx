@@ -1,3 +1,5 @@
+import { feet, meters } from "../domain/units";
+import { NumberInput } from "./NumberInput";
 import { equipmentCatalog, moduleSize } from "../domain/design";
 import { generateLayout, zones } from "../domain/warehouse";
 import type {
@@ -66,7 +68,7 @@ export function FloorPlan({
         {layout.locations
           .filter(
             (l) =>
-              l.floorId === floor.id && (l.zone !== "storage" || l.level === 1),
+              l.floorId === floor.id && (l.zone !== "storage" || (l.level === 1 && (!!onSelect || occupied.has(l.id)))),
           )
           .map((l) => (
             <rect
@@ -112,7 +114,7 @@ export function FloorPlan({
         />
       ))}
       {layout.locations
-        .filter((l) => l.zone !== "storage" || l.level === 1)
+        .filter((l) => l.zone !== "storage" || (l.level === 1 && (!!onSelect || occupied.has(l.id))))
         .map((l) => (
           <g
             key={l.id}
@@ -179,8 +181,8 @@ export function LayoutPlacement({
     <details className="layout-placement">
       <summary>Customize area positions</summary>
       <p className="subtle">
-        Offsets in meters from the selected template. Docks stay on their
-        exterior wall. Overlaps and boundary violations prevent saving.
+        Offsets in feet from the selected template. Docks stay on their exterior
+        wall. Overlaps and boundary violations prevent saving.
       </p>
       <FloorPlan config={config} />
       <div className="placement-grid">
@@ -189,20 +191,16 @@ export function LayoutPlacement({
             <strong>{zone.name}</strong>
             {(["x", "z"] as const).map((axis) => (
               <label key={axis}>
-                {axis.toUpperCase()} offset
-                <input
-                  aria-label={zone.name + " " + axis.toUpperCase() + " offset"}
-                  type="number"
-                  min={-100}
-                  max={100}
-                  step={0.5}
+                {axis === "x" ? "Across" : "Down"} offset (ft)
+                <NumberInput
+                  value={feet(config.layoutOffsets?.[zone.id]?.[axis] || 0)}
+                  step={1}
                   disabled={
                     (zone.id === "inbound" && axis === "z") ||
                     (zone.id === "outbound" &&
                       axis === (config.template === "l-flow" ? "x" : "z"))
                   }
-                  value={config.layoutOffsets?.[zone.id]?.[axis] || 0}
-                  onChange={(e) => set(zone.id, axis, Number(e.target.value))}
+                  onChange={(n) => set(zone.id, axis, meters(n))}
                 />
               </label>
             ))}

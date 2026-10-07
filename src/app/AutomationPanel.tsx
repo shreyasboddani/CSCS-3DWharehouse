@@ -1,3 +1,4 @@
+import { formatFeet } from "../domain/units";
 import { useState } from "react";
 import { api } from "./service";
 import { mobileRobots } from "../domain/design";
@@ -155,7 +156,7 @@ export function AutomationPanel({
                 {robot && (
                   <>
                     <p>
-                      {robot.x.toFixed(2)}, {robot.z.toFixed(2)} m ·{" "}
+                      {formatFeet(robot.x)}, {formatFeet(robot.z)} ft ·{" "}
                       <strong>{robot.battery.toFixed(1)}% battery</strong>
                     </p>
                     <progress
@@ -167,7 +168,9 @@ export function AutomationPanel({
                       {robot.reason ||
                         (state?.paused
                           ? "Simulation paused."
-                  : robot.status === "Running" ? "Executing a saved route circuit." : "Ready for a queued route circuit.")}
+                          : robot.status === "Running"
+                            ? "Executing a saved route circuit."
+                            : "Ready for a queued route circuit.")}
                     </p>
                   </>
                 )}

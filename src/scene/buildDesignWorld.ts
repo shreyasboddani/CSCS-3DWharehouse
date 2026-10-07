@@ -34,6 +34,14 @@ export function buildDesignWorld({
     interiorShell = new T.Group();
   root.name = c.name;
   root.add(ceiling, interiorShell);
+  // Index once: hundreds of aisle modules must not rescan every address per module.
+  const locationsByModule = new Map<string, Location[]>();
+  for (const location of layout.locations) {
+    if (!location.moduleId) continue;
+    const list = locationsByModule.get(location.moduleId);
+    if (list) list.push(location);
+    else locationsByModule.set(location.moduleId, [location]);
+  }
   const geometries = new Set<T.BufferGeometry>(),
     materials = new Set<T.Material>(),
     textures = new Set<T.Texture>();
@@ -365,7 +373,8 @@ export function buildDesignWorld({
       group.add(g);
       g.name = m.label;
       g.userData.moduleId = m.id;
-      const loc = layout.locations.find((l) => l.moduleId === m.id);
+      const moduleLocations = locationsByModule.get(m.id) || [];
+      const loc = moduleLocations[0];
       if (loc) g.userData.locationId = loc.id;
       const color = material(
         equipmentCatalog.find((e) => e.id === m.kind)?.color || "#a2b7d2",
@@ -439,7 +448,11 @@ export function buildDesignWorld({
               );
             }
           }
-          for (let b = 1; b <= m.bays; b++) {
+          for (
+            let b = 1;
+            b <= m.bays;
+            b += Math.max(1, Math.ceil(m.bays / 24))
+          ) {
             const z = (b - (m.bays + 1) / 2) * 2.4;
             label(g, `B${String(b).padStart(2, "0")}`, x, 0.025, z, 1);
           }
@@ -453,7 +466,7 @@ export function buildDesignWorld({
           l.rotation.y = -0.8;
           r.rotation.y = 0.8;
         }
-        const bins = layout.locations.filter((l) => l.moduleId === m.id),
+        const bins = moduleLocations,
           occupied = bins.filter(
             (l, i) => activeStock.has(l.id) || (designPreview && i % 3 === 0),
           );
@@ -495,7 +508,7 @@ export function buildDesignWorld({
           root.add(bases);
           binMeshes.set(bases, occupied);
         }
-        const addressable = layout.locations.filter((l) => l.moduleId === m.id);
+        const addressable = moduleLocations;
         if (addressable.length) {
           const pickMaterial = new T.MeshBasicMaterial({
             colorWrite: false,
@@ -524,7 +537,12 @@ export function buildDesignWorld({
           binMeshes.set(proxies, addressable);
         }
         label(g, `AISLE ${m.number}`, 0, 0.03, -m.bays * 1.2 - 0.5, 2.7);
-        const sign = aisleNumber(m.number, 0, m.levels * 1.25 + 1.5, -m.bays * 1.2);
+        const sign = aisleNumber(
+          m.number,
+          0,
+          m.levels * 1.25 + 1.5,
+          -m.bays * 1.2,
+        );
         g.add(sign.sprite);
         textures.add(sign.texture);
         materials.add(sign.material);

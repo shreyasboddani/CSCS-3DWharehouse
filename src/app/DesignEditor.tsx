@@ -1,4 +1,5 @@
-import { squareFeet } from "../domain/units";
+import { squareFeet, feet, meters, formatFeet } from "../domain/units";
+import { NumberInput } from "./NumberInput";
 import type { DraftInput } from "../domain/drafts";
 import { useNavigate } from "react-router-dom";
 import { lazy, Suspense, useMemo, useRef, useState, useEffect } from "react";
@@ -13,6 +14,10 @@ import {
 } from "../domain/warehouse";
 import type { WarehouseConfig, OperationalRecord } from "../domain/warehouse";
 import {
+  resizeDesign,
+  updateDesignModule,
+  shelfSectionsForLength,
+  arrangeFloor,
   createModule,
   designFromLayout,
   equipmentCatalog,
@@ -65,7 +70,9 @@ export function DesignEditor({
     [config],
   );
   const [design, setDesign] = useState<Design>(initial),
-    [history, setHistory] = useState<Design[]>([initial]),
+    [history, setHistory] = useState([
+      { design: initial, width: config.width, depth: config.depth },
+    ]),
     [cursor, setCursor] = useState(0);
   const [floorId, setFloorId] = useState(
       draftContext?.floorId || initial.floors[0].id,
@@ -83,6 +90,7 @@ export function DesignEditor({
     [zoom, setZoom] = useState(1),
     [showGrid, setShowGrid] = useState(true),
     [message, setMessage] = useState("");
+  const [followResize, setFollowResize] = useState(true);
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [previewMode, setPreviewMode] = useState<ViewMode>("orbit");
   const [siteWidth, setSiteWidth] = useState(config.width),
@@ -197,15 +205,56 @@ export function DesignEditor({
       ...(recordIssue ? [recordIssue] : []),
     ]),
   ];
+  const rulerFeet = Math.max(feet(siteWidth), feet(siteDepth)) / 12;
+  const rulerStep = meters(
+    [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000].find(
+      (n) => n >= rulerFeet,
+    ) || Math.pow(10, Math.ceil(Math.log10(rulerFeet))),
+  );
+  const labelSize = Math.max(siteWidth, siteDepth) / 70;
   const width = siteWidth + 16,
     depth = siteDepth + 16;
-  const commit = (next: Design) => {
-    const states = [...history.slice(0, cursor + 1), next].slice(-50);
+  const commit = (
+    next: Design,
+    size = { width: siteWidth, depth: siteDepth },
+  ) => {
+    const states = [
+      ...history.slice(0, cursor + 1),
+      { design: next, ...size },
+    ].slice(-50);
     setHistory(states);
     setCursor(states.length - 1);
     setDesign(next);
+    setSiteWidth(size.width);
+    setSiteDepth(size.depth);
     setMessage("");
   };
+  function resizeBuilding(width: number, depth: number) {
+    const resized = resizeDesign(
+      design,
+      { width: siteWidth, depth: siteDepth },
+      { width, depth },
+    );
+    const next = followResize
+      ? { ...resized, floors: resized.floors.map(arrangeFloor) }
+      : {
+          ...resized,
+          floors: resized.floors.map((f, i) => ({
+            ...f,
+            modules: design.floors[i].modules,
+          })),
+        };
+    commit(next, { width, depth });
+    setSelected([]);
+  }
+  function changeShape(shape: "rectangle" | "l-shape" | "t-shape") {
+    const next = {
+      ...floor,
+      outline: outlineTemplate(shape, siteWidth, siteDepth),
+    };
+    changeFloor(followResize ? arrangeFloor(next) : next);
+    setSelected([]);
+  }
   const changeFloor = (next: DesignFloor) =>
     commit({
       ...design,
@@ -213,15 +262,7 @@ export function DesignEditor({
     });
   const updateModule = (patch: Partial<DesignModule>) => {
     if (!module) return;
-    changeFloor({
-      ...floor,
-      modules: floor.modules.map((m) =>
-        m.id === module.id ? {
-          ...m, ...patch,
-          route: patch.route || m.route.map((p) => ({ x: p.x + ((patch.x ?? m.x) - m.x), z: p.z + ((patch.z ?? m.z) - m.z) })),
-        } : m,
-      ),
-    });
+    changeFloor(updateDesignModule(floor, module.id, patch, followResize));
   };
   const snap = (n: number) => Math.round(n / design.grid) * design.grid;
   const point = (event: { clientX: number; clientY: number }) => {
@@ -370,13 +411,25 @@ export function DesignEditor({
       }
       setRectangle(undefined);
       setTool("select");
-    } else if (g.kind !== "area") commit(design);
+    } else if (g.kind !== "area")
+      commit(
+        g.kind === "vertex" && followResize
+          ? {
+              ...design,
+              floors: design.floors.map((f) =>
+                f.id === floor.id ? arrangeFloor(f) : f,
+              ),
+            }
+          : design,
+      );
   }
   function undo(direction: number) {
     const next = cursor + direction;
     if (next < 0 || next >= history.length) return;
     setCursor(next);
-    setDesign(history[next]);
+    setDesign(history[next].design);
+    setSiteWidth(history[next].width);
+    setSiteDepth(history[next].depth);
     setSelected([]);
   }
   function removeSelected() {
@@ -387,7 +440,6 @@ export function DesignEditor({
     setSelected([]);
   }
   function addFloor() {
-    if (design.floors.length >= 4) return;
     const id = "floor-" + crypto.randomUUID().slice(0, 8);
     commit({
       ...design,
@@ -396,7 +448,7 @@ export function DesignEditor({
         {
           id,
           name: `Floor ${design.floors.length + 1}`,
-          height: 12,
+          height: 15.24,
           outline: floor.outline.map((p) => ({ ...p })),
           modules: [],
         },
@@ -463,17 +515,43 @@ export function DesignEditor({
   ) => (
     <label key={key}>
       {label}
-      <input
-        type="number"
-        value={module?.[key] ?? ""}
+      <NumberInput
+        value={
+          module
+            ? [
+                "x",
+                "z",
+                "width",
+                "depth",
+                "height",
+                "aisleWidth",
+                "speed",
+              ].includes(key)
+              ? feet(module[key] || 0)
+              : module[key] || 0
+            : 0
+        }
         min={min}
         max={max}
         step={step}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (Number.isFinite(n) && n >= min && n <= (max ?? Number.MAX_SAFE_INTEGER))
-            updateModule({ [key]: n });
-        }}
+        integer={["bays", "levels", "bins", "number", "binCapacity"].includes(
+          key,
+        )}
+        onChange={(n) =>
+          updateModule({
+            [key]: [
+              "x",
+              "z",
+              "width",
+              "depth",
+              "height",
+              "aisleWidth",
+              "speed",
+            ].includes(key)
+              ? meters(n)
+              : n,
+          })
+        }
       />
     </label>
   );
@@ -483,7 +561,10 @@ export function DesignEditor({
         <div>
           <span className="eyebrow">WAREHOUSE DESIGN STUDIO</span>
           <h1>Build your floor. Your way.</h1>
-          <p>Choose a building shape. Drag its corners. Add shelves and check it in 3D.</p>
+          <p>
+            Choose a building shape. Drag its corners. Add shelves and check it
+            in 3D.
+          </p>
         </div>
         <div className="actions">
           {onSaveDraft && (
@@ -550,29 +631,19 @@ export function DesignEditor({
           />
         </label>
         <label>
-          Site width (m)
-          <input
-            type="number"
-            min={24}
-            max={140}
-            value={siteWidth}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (n >= 24 && n <= 140) setSiteWidth(n);
-            }}
+          Building width (ft)
+          <NumberInput
+            value={feet(siteWidth)}
+            min={feet(1)}
+            onChange={(n) => resizeBuilding(meters(n), siteDepth)}
           />
         </label>
         <label>
-          Site depth (m)
-          <input
-            type="number"
-            min={24}
-            max={140}
-            value={siteDepth}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (n >= 24 && n <= 140) setSiteDepth(n);
-            }}
+          Building length (ft)
+          <NumberInput
+            value={feet(siteDepth)}
+            min={feet(1)}
+            onChange={(n) => resizeBuilding(siteWidth, meters(n))}
           />
         </label>
         <div>
@@ -581,7 +652,10 @@ export function DesignEditor({
         </div>
         <div>
           <strong>
-            {squareFeet(design.floors.reduce((a, f) => a + polygonArea(f.outline), 0))} ft²
+            {squareFeet(
+              design.floors.reduce((a, f) => a + polygonArea(f.outline), 0),
+            )}{" "}
+            ft²
           </strong>
           <span>total floor area</span>
         </div>
@@ -594,12 +668,10 @@ export function DesignEditor({
             onClick={() => selectFloor(f.id)}
           >
             {f.name}
-            <small>+{floorElevation(design, i).toFixed(1)} m</small>
+            <small>+{formatFeet(floorElevation(design, i))} ft</small>
           </button>
         ))}
-        <button onClick={addFloor} disabled={design.floors.length >= 4}>
-          ＋ Add floor
-        </button>
+        <button onClick={addFloor}>＋ Add floor</button>
       </div>
       <div className="design-toolbar">
         <div className="segmented">
@@ -644,9 +716,10 @@ export function DesignEditor({
                 aria-label="Choose building shape"
                 defaultValue=""
                 onChange={(e) => {
-                  const shape = e.target.value as "rectangle" | "l-shape" | "t-shape";
+                  const shape = e.target.value as
+                    "rectangle" | "l-shape" | "t-shape";
                   if (shape) {
-                    changeFloor({ ...floor, outline: outlineTemplate(shape, siteWidth, siteDepth) });
+                    changeShape(shape);
                     setSelected([]);
                     setTool("select");
                     setArmed(undefined);
@@ -715,6 +788,22 @@ export function DesignEditor({
             >
               ↷ Redo
             </button>
+            <label className="design-checkbox">
+              <input
+                type="checkbox"
+                checked={followResize}
+                onChange={(e) => setFollowResize(e.target.checked)}
+              />
+              Move things when building changes
+            </label>
+            <button
+              onClick={() => {
+                changeFloor(arrangeFloor(floor));
+                setSelected([]);
+              }}
+            >
+              Tidy this floor
+            </button>
             <label>
               Snap
               <select
@@ -723,11 +812,13 @@ export function DesignEditor({
                   commit({ ...design, grid: Number(e.target.value) })
                 }
               >
-                {[0.1, 0.25, 0.5, 1, 2].map((n) => (
-                  <option value={n} key={n}>
-                    {n} m
-                  </option>
-                ))}
+                {[...new Set([design.grid, ...[0.5, 1, 2, 5, 10].map(meters)])]
+                  .sort((a, b) => a - b)
+                  .map((n) => (
+                    <option value={n} key={n}>
+                      {formatFeet(n, 2)} ft
+                    </option>
+                  ))}
               </select>
             </label>
             <button
@@ -794,7 +885,7 @@ export function DesignEditor({
                     <div>
                       <strong>{e.name}</strong>
                       <small>
-                        {e.width} × {e.depth} m
+                        {formatFeet(e.width)} × {formatFeet(e.depth)} ft
                       </small>
                     </div>
                     <span>＋</span>
@@ -862,7 +953,7 @@ export function DesignEditor({
               {floor.name}
             </span>
             <span>
-              {siteWidth} × {siteDepth} m site ·{" "}
+              {formatFeet(siteWidth)} × {formatFeet(siteDepth)} ft building ·{" "}
               {squareFeet(polygonArea(floor.outline))} ft² floor
             </span>
           </div>
@@ -899,7 +990,7 @@ export function DesignEditor({
                 onPointerCancel={() => {
                   gesture.current = null;
                   setRectangle(undefined);
-                  setDesign(history[cursor]);
+                  setDesign(history[cursor].design);
                 }}
                 onKeyDown={(e) => {
                   if (
@@ -969,12 +1060,12 @@ export function DesignEditor({
                 <defs>
                   <pattern
                     id="design-meter-grid"
-                    width={1}
-                    height={1}
+                    width={meters(1)}
+                    height={meters(1)}
                     patternUnits="userSpaceOnUse"
                   >
                     <path
-                      d="M 1 0 L 0 0 0 1"
+                      d={`M ${meters(1)} 0 L 0 0 0 ${meters(1)}`}
                       fill="none"
                       stroke="#dfe7f0"
                       strokeWidth=".025"
@@ -983,13 +1074,17 @@ export function DesignEditor({
                   </pattern>
                   <pattern
                     id="design-major-grid"
-                    width={5}
-                    height={5}
+                    width={rulerStep}
+                    height={rulerStep}
                     patternUnits="userSpaceOnUse"
                   >
-                    <rect width={5} height={5} fill="url(#design-meter-grid)" />
+                    <rect
+                      width={rulerStep}
+                      height={rulerStep}
+                      fill="url(#design-meter-grid)"
+                    />
                     <path
-                      d="M 5 0 L 0 0 0 5"
+                      d={`M ${rulerStep} 0 L 0 0 0 ${rulerStep}`}
                       stroke="#b8cadb"
                       strokeWidth=".05"
                       fill="none"
@@ -1025,11 +1120,11 @@ export function DesignEditor({
                       <text
                         x={(p.x + q.x) / 2}
                         y={(p.z + q.z) / 2 - 0.5}
-                        fontSize=".8"
+                        fontSize={labelSize}
                         fill="#35516d"
                         textAnchor="middle"
                       >
-                        {Math.hypot(p.x - q.x, p.z - q.z).toFixed(1)} m
+                        {formatFeet(Math.hypot(p.x - q.x, p.z - q.z))} ft
                       </text>
                       <circle
                         data-vertex={i}
@@ -1046,36 +1141,36 @@ export function DesignEditor({
                   );
                 })}
                 {Array.from(
-                  { length: Math.floor(siteWidth / 5) + 1 },
+                  { length: Math.floor(siteWidth / rulerStep) + 1 },
                   (_, i) => {
-                    const x = -siteWidth / 2 + i * 5;
+                    const x = -siteWidth / 2 + i * rulerStep;
                     return (
                       <text
                         key={i}
                         x={x}
                         y={-siteDepth / 2 - 2}
-                        fontSize=".75"
+                        fontSize={labelSize}
                         textAnchor="middle"
                         fill="#8395aa"
                       >
-                        {(i * 5).toFixed(0)} m
+                        {formatFeet(i * rulerStep, 0)} ft
                       </text>
                     );
                   },
                 )}
                 {Array.from(
-                  { length: Math.floor(siteDepth / 5) + 1 },
+                  { length: Math.floor(siteDepth / rulerStep) + 1 },
                   (_, i) => {
-                    const z = -siteDepth / 2 + i * 5;
+                    const z = -siteDepth / 2 + i * rulerStep;
                     return (
                       <text
                         key={i}
                         x={-siteWidth / 2 - 2.2}
                         y={z}
-                        fontSize=".75"
+                        fontSize={labelSize}
                         fill="#8395aa"
                       >
-                        {i * 5} m
+                        {formatFeet(i * rulerStep, 0)} ft
                       </text>
                     );
                   },
@@ -1121,13 +1216,13 @@ export function DesignEditor({
                                 height={m.bays * 2.4}
                                 fill="#3c6d9a"
                               />
-                              {Array.from({ length: m.bays - 1 }, (_, i) => (
+                              {Array.from({ length: Math.min(m.bays - 1, 200) }, (_, i) => (
                                 <line
                                   key={i}
                                   x1={side * (m.aisleWidth / 2 + 0.6) - 0.6}
                                   x2={side * (m.aisleWidth / 2 + 0.6) + 0.6}
-                                  y1={-m.bays * 1.2 + (i + 1) * 2.4}
-                                  y2={-m.bays * 1.2 + (i + 1) * 2.4}
+                                  y1={-m.bays * 1.2 + Math.round((i + 1) * m.bays / Math.min(m.bays, 201)) * 2.4}
+                                  y2={-m.bays * 1.2 + Math.round((i + 1) * m.bays / Math.min(m.bays, 201)) * 2.4}
                                   stroke="#e2b87a"
                                   strokeWidth=".1"
                                 />
@@ -1156,7 +1251,7 @@ export function DesignEditor({
                           textAnchor="middle"
                           fill="#235bb1"
                         >
-                          {size.width.toFixed(1)} × {size.depth.toFixed(1)} m
+                          {formatFeet(size.width)} × {formatFeet(size.depth)} ft
                         </text>
                       )}
                       {m.route.length > 0 && (
@@ -1233,7 +1328,11 @@ export function DesignEditor({
               <button
                 disabled={points.length < 3}
                 onClick={() => {
-                  changeFloor({ ...floor, outline: points });
+                  changeFloor(
+                    followResize
+                      ? arrangeFloor({ ...floor, outline: points })
+                      : { ...floor, outline: points },
+                  );
                   setPoints([]);
                   setTool("select");
                 }}
@@ -1258,10 +1357,10 @@ export function DesignEditor({
                   />
                 </label>
                 <div className="design-input-grid">
-                  {input("X position (m)", "x", -70, 70)}
-                  {input("Z position (m)", "z", -70, 70)}
+                  {input("Across position (ft)", "x", -Infinity, undefined)}
+                  {input("Down position (ft)", "z", -Infinity, undefined)}
                   {input("Aisle or door number", "number", 1, undefined, 1)}
-                  {input("Height (m)", "height", 0.1, 18, 0.1)}
+                  {input("Height (ft)", "height", feet(0.1), undefined, 0.1)}
                 </div>
                 <label>
                   Orientation
@@ -1285,6 +1384,20 @@ export function DesignEditor({
                 {module.kind === "aisle" ? (
                   <>
                     <h3>Shelves in this aisle</h3>
+                    <label>
+                      Aisle length (ft)
+                      <NumberInput
+                        value={feet(module.bays * 2.4)}
+                        min={feet(2.4)}
+                        step={feet(2.4)}
+                        onChange={(n) =>
+                          updateModule({
+                            bays: shelfSectionsForLength(meters(n)),
+                          })
+                        }
+                      />
+                    </label>
+                    <p>Length uses whole shelf sections, about 8 ft each.</p>
                     <button
                       onClick={() => {
                         const fitted = fitDesignAisle(floor, module);
@@ -1294,16 +1407,31 @@ export function DesignEditor({
                     >
                       Fit aisle length to this building
                     </button>
-                    <p>Length stops at walls and other equipment. Move the aisle first if it does not fit.</p>
+                    <p>
+                      Length stops at walls and other equipment. Move the aisle
+                      first if it does not fit.
+                    </p>
                     <div className="design-input-grid">
-                      {input("Shelf sections along the aisle", "bays", 1, undefined, 1)}
-                      {input("Levels", "levels", 1, 6, 1)}
-                      {input("Bins per bay / level", "bins", 1, 4, 1)}
-                      {input("Aisle clearance (m)", "aisleWidth", 2.4, 6, 0.1)}
+                      {input(
+                        "Shelf sections along the aisle",
+                        "bays",
+                        1,
+                        undefined,
+                        1,
+                      )}
+                      {input("Shelves stacked high", "levels", 1, undefined, 1)}
+                      {input("Spaces on each shelf", "bins", 1, undefined, 1)}
+                      {input(
+                        "Walking space (ft)",
+                        "aisleWidth",
+                        feet(0.6),
+                        undefined,
+                        0.1,
+                      )}
                     </div>
                     <p>
                       {2 * module.bays * module.levels * module.bins}{" "}
-                      addressable bins · {(module.bays * 2.4).toFixed(1)} m rack
+                      addressable bins · {formatFeet(module.bays * 2.4)} ft rack
                       length
                     </p>
                     {input("Capacity per bin", "binCapacity", 1, 1000000, 1)}
@@ -1327,8 +1455,8 @@ export function DesignEditor({
                   </>
                 ) : (
                   <div className="design-input-grid">
-                    {input("Width (m)", "width", 0.2, 140, 0.1)}
-                    {input("Depth (m)", "depth", 0.2, 140, 0.1)}
+                    {input("Width (ft)", "width", feet(0.2), undefined, 0.1)}
+                    {input("Length (ft)", "depth", feet(0.2), undefined, 0.1)}
                   </div>
                 )}
                 {module.kind === "area" && (
@@ -1399,7 +1527,13 @@ export function DesignEditor({
                     </label>
                     {mobileRobots.includes(module.kind as EquipmentKind) && (
                       <>
-                        {input("Preview speed (m/s)", "speed", 0.05, 3, 0.05)}
+                        {input(
+                          "Travel speed (ft/s)",
+                          "speed",
+                          feet(0.05),
+                          feet(3),
+                          0.1,
+                        )}
                         <label className="design-checkbox">
                           <input
                             type="checkbox"
@@ -1431,8 +1565,8 @@ export function DesignEditor({
                         <details>
                           <summary>Edit route waypoints</summary>
                           <p>
-                            Start follows the robot position. X/Z are meters
-                            from the site center.
+                            Start follows the robot position. X/Z are feet from
+                            the site center.
                           </p>
                           {module.route.map((p, index) => (
                             <div key={index} className="design-waypoint">
@@ -1440,28 +1574,20 @@ export function DesignEditor({
                               {(["x", "z"] as const).map((axis) => (
                                 <label key={axis}>
                                   {axis.toUpperCase()}
-                                  <input
-                                    type="number"
-                                    step={design.grid}
-                                    min={-70}
-                                    max={70}
-                                    value={p[axis]}
+                                  <NumberInput
+                                    value={feet(p[axis])}
+                                    step={feet(design.grid)}
                                     disabled={index === 0}
-                                    onChange={(e) => {
-                                      const n = Number(e.target.value);
-                                      if (
-                                        !e.target.value ||
-                                        !Number.isFinite(n) ||
-                                        Math.abs(n) > 70
-                                      )
-                                        return;
+                                    onChange={(n) =>
                                       updateModule({
                                         route: module.route.map((v, i) =>
-                                          i === index ? { ...v, [axis]: n } : v,
+                                          i === index
+                                            ? { ...v, [axis]: meters(n) }
+                                            : v,
                                         ),
                                         loop: false,
-                                      });
-                                    }}
+                                      })
+                                    }
                                   />
                                 </label>
                               ))}
@@ -1505,14 +1631,16 @@ export function DesignEditor({
                             .reduce(
                               (sum, p, i) =>
                                 sum +
-                                Math.hypot(
-                                  p.x - module.route[i].x,
-                                  p.z - module.route[i].z,
+                                feet(
+                                  Math.hypot(
+                                    p.x - module.route[i].x,
+                                    p.z - module.route[i].z,
+                                  ),
                                 ),
                               0,
                             )
                             .toFixed(1)}{" "}
-                          m route
+                          ft route
                         </p>
                       </>
                     )}
@@ -1621,24 +1749,20 @@ export function DesignEditor({
                   />
                 </label>
                 <label>
-                  Roof height (m)
-                  <input
-                    type="number"
-                    min={3}
-                    max={60}
+                  Roof height (ft)
+                  <NumberInput
+                    value={feet(floor.height)}
+                    min={feet(3)}
                     step={0.1}
-                    value={floor.height}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      if (n >= 3 && n <= 60)
-                        changeFloor({ ...floor, height: n });
-                    }}
+                    onChange={(n) =>
+                      changeFloor({ ...floor, height: meters(n) })
+                    }
                   />
                 </label>
                 <p>
-                  Elevation: +{floorElevation(design, floorIndex).toFixed(1)} m.
-                  Upper floors are stacked using each floor’s clear height plus
-                  a 0.3 m slab.
+                  Elevation: +{formatFeet(floorElevation(design, floorIndex))}{" "}
+                  ft. Upper floors are stacked using each floor’s clear height
+                  plus a 1 ft slab.
                 </p>
                 <label>
                   Building shape
@@ -1646,15 +1770,9 @@ export function DesignEditor({
                     defaultValue=""
                     onChange={(e) => {
                       if (e.target.value)
-                        changeFloor({
-                          ...floor,
-                          outline: outlineTemplate(
-                            e.target.value as
-                              "rectangle" | "l-shape" | "t-shape",
-                            siteWidth,
-                            siteDepth,
-                          ),
-                        });
+                        changeShape(
+                          e.target.value as "rectangle" | "l-shape" | "t-shape",
+                        );
                       e.target.value = "";
                     }}
                   >
@@ -1665,32 +1783,41 @@ export function DesignEditor({
                   </select>
                 </label>
                 <p>
-                  Drag the dots on the edge to change the building. To draw a new shape, click “Draw building shape”, click each corner, then click “Close outline”.
+                  Drag the dots on the edge to change the building. To draw a
+                  new shape, click “Draw building shape”, click each corner,
+                  then click “Close outline”.
                 </p>
                 <details>
                   <summary>Move corners by numbers</summary>
-                  <p>Measure from the top-left corner of the site. All distances are in meters.</p>
+                  <p>
+                    Measure from the top-left corner of the site. All distances
+                    are in feet.
+                  </p>
                   {floor.outline.map((point, index) => (
                     <div className="design-input-grid" key={index}>
-                      {(["x", "z"] as const).map(axis => {
+                      {(["x", "z"] as const).map((axis) => {
                         const span = axis === "x" ? siteWidth : siteDepth;
                         return (
                           <label key={axis}>
-                            Corner {index + 1}: {axis === "x" ? "across" : "down"} (m)
-                            <input
-                              type="number"
+                            Corner {index + 1}:{" "}
+                            {axis === "x" ? "across" : "down"} (ft)
+                            <NumberInput
+                              value={feet(point[axis] + span / 2)}
                               min={0}
-                              max={span}
-                              step={design.grid}
-                              value={Number((point[axis] + span / 2).toFixed(2))}
-                              onChange={(e) => {
-                                if (e.target.value === "") return;
-                                const n = Number(e.target.value);
-                                if (Number.isFinite(n) && n >= 0 && n <= span)
-                                  changeFloor({
-                                    ...floor,
-                                    outline: floor.outline.map((p, i) => i === index ? { ...p, [axis]: n - span / 2 } : p),
-                                  });
+                              max={feet(span)}
+                              step={feet(design.grid)}
+                              onChange={(n) => {
+                                const next = {
+                                  ...floor,
+                                  outline: floor.outline.map((p, i) =>
+                                    i === index
+                                      ? { ...p, [axis]: meters(n) - span / 2 }
+                                      : p,
+                                  ),
+                                };
+                                changeFloor(
+                                  followResize ? arrangeFloor(next) : next,
+                                );
                               }}
                             />
                           </label>
@@ -1725,7 +1852,7 @@ export function DesignEditor({
                     <button key={m.id} onClick={() => setSelected([m.id])}>
                       {m.label}
                       <small>
-                        {m.kind} · {m.x.toFixed(1)}, {m.z.toFixed(1)} m
+                        {m.kind} · {formatFeet(m.x)}, {formatFeet(m.z)} ft
                       </small>
                     </button>
                   ))}

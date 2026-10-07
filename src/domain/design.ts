@@ -222,18 +222,18 @@ export const equipmentCatalog = [
 export type EquipmentKind = (typeof equipmentCatalog)[number]["id"];
 export const mobileRobots: EquipmentKind[] = ["amr", "agv", "tugger"];
 const pointSchema = z.object({
-  x: z.number().min(-70).max(70),
-  z: z.number().min(-70).max(70),
+  x: z.number(),
+  z: z.number(),
 });
 export const moduleSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
   kind: z.enum([...equipmentCatalog.map((e) => e.id), "area"]),
   label: z.string().trim().min(1).max(80),
-  x: z.number().min(-70).max(70),
-  z: z.number().min(-70).max(70),
-  width: z.number().min(0.2).max(140),
-  depth: z.number().min(0.2).max(140),
-  height: z.number().min(0.1).max(18),
+  x: z.number(),
+  z: z.number(),
+  width: z.number().min(0.2),
+  depth: z.number().min(0.2),
+  height: z.number().min(0.1),
   rotation: z.union([
     z.literal(0),
     z.literal(90),
@@ -245,9 +245,9 @@ export const moduleSchema = z.object({
     .optional(),
   number: z.number().int().min(1),
   bays: z.number().int().min(1),
-  levels: z.number().int().min(1).max(6),
-  bins: z.number().int().min(1).max(4),
-  aisleWidth: z.number().min(2.4).max(6),
+  levels: z.number().int().min(1),
+  bins: z.number().int().min(1),
+  aisleWidth: z.number().min(0.6),
   binCapacity: z.number().int().min(1).max(1000000).optional(),
   unit: z.string().trim().min(1).max(20).default("units"),
   task: z
@@ -270,18 +270,86 @@ export const moduleSchema = z.object({
 export const floorSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/),
   name: z.string().trim().min(1).max(80),
-  height: z.number().min(3).max(60),
-  outline: z.array(pointSchema).min(3).max(32),
-  modules: z.array(moduleSchema).max(400),
+  height: z.number().min(3),
+  outline: z.array(pointSchema).min(3),
+  modules: z.array(moduleSchema),
 });
 export const designSchema = z.object({
   version: z.literal(1),
-  grid: z.number().min(0.1).max(2),
-  floors: z.array(floorSchema).min(1).max(4),
+  grid: z.number().positive(),
+  floors: z.array(floorSchema).min(1),
 });
+/** Resize the shell and follow its proportions without scaling physical equipment. */
+export function resizeDesign(
+  design: Design,
+  before: { width: number; depth: number },
+  after: { width: number; depth: number },
+): Design {
+  const sx = after.width / before.width,
+    sz = after.depth / before.depth;
+  return {
+    ...design,
+    floors: design.floors.map((f) => ({
+      ...f,
+      outline: f.outline.map((p) => ({ x: p.x * sx, z: p.z * sz })),
+      modules: f.modules.map((m) => {
+        const next = {
+          ...m,
+          x: m.x * sx,
+          z: m.z * sz,
+          route: m.route.map((p) => ({ x: p.x * sx, z: p.z * sz })),
+        };
+        if (m.kind === "area") {
+          next.width *= m.rotation % 180 ? sz : sx;
+          next.depth *= m.rotation % 180 ? sx : sz;
+        }
+        if (m.kind === "aisle")
+          next.bays = Math.max(
+            1,
+            Math.floor(m.bays * (m.rotation % 180 ? sx : sz)),
+          );
+        if (m.kind === "inbound" || m.kind === "outbound") {
+          const anchor = localPoint(m, 0, -m.depth / 2),
+            offset = localPoint({ ...m, x: 0, z: 0 }, 0, -m.depth / 2);
+          next.x = anchor.x * sx - offset.x;
+          next.z = anchor.z * sz - offset.z;
+        }
+        return next;
+      }),
+    })),
+  };
+}
 export type Design = z.infer<typeof designSchema>;
 export type DesignFloor = z.infer<typeof floorSchema>;
 export type DesignModule = z.infer<typeof moduleSchema>;
+export const shelfSectionsForLength = (length: number) =>
+  Math.max(1, Math.round(length / 2.4));
+export function updateDesignModule(
+  floor: DesignFloor,
+  id: string,
+  patch: Partial<DesignModule>,
+  growRoof = true,
+): DesignFloor {
+  const modules = floor.modules.map((m) =>
+    m.id === id
+      ? {
+          ...m,
+          ...patch,
+          route: patch.route || m.route.map((p) => ({
+            x: p.x + ((patch.x ?? m.x) - m.x),
+            z: p.z + ((patch.z ?? m.z) - m.z),
+          })),
+        }
+      : m,
+  );
+  const height = growRoof
+    ? modules.reduce((h, m) => Math.max(
+        h,
+        (m.kind === "aisle" ? m.levels * 1.25 + 0.3 : m.height) + 1.5,
+      ), floor.height)
+    : floor.height;
+  return { ...floor, modules, height };
+}
 export type DesignPoint = z.infer<typeof pointSchema>;
 export function floorElevation(design: Design, index: number) {
   return design.floors.slice(0, index).reduce((y, f) => y + f.height + 0.3, 0);
@@ -448,21 +516,159 @@ export function containsModule(floor: DesignFloor, m: DesignModule) {
   return true;
 }
 /** Extend an aisle at its current position, without crossing walls or fixtures. */
-export function fitDesignAisle(floor: DesignFloor, aisle: DesignModule): DesignModule | undefined {
+export function fitDesignAisle(
+  floor: DesignFloor,
+  aisle: DesignModule,
+): DesignModule | undefined {
   if (aisle.kind !== "aisle") return undefined;
   const axis = aisle.rotation % 180 ? "x" : "z";
-  const span = Math.max(...floor.outline.map(p => p[axis])) - Math.min(...floor.outline.map(p => p[axis]));
+  const span =
+    Math.max(...floor.outline.map((p) => p[axis])) -
+    Math.min(...floor.outline.map((p) => p[axis]));
   let fitted: DesignModule | undefined;
   for (let bays = 1; bays <= Math.floor(span / 2.4); bays++) {
     const candidate = { ...aisle, bays };
     const walkingSpace: DesignModule = {
-      ...candidate, kind: "area", width: candidate.aisleWidth + 3.4, depth: bays * 2.4 + 2,
+      ...candidate,
+      kind: "area",
+      width: candidate.aisleWidth + 3.4,
+      depth: bays * 2.4 + 2,
     };
-    if (!containsModule(floor, walkingSpace) || floor.modules.some(m =>
-      m.id !== aisle.id && m.kind !== "area" && modulesOverlap(candidate, m, 0.5))) break;
+    if (
+      !containsModule(floor, walkingSpace) ||
+      floor.modules.some(
+        (m) =>
+          m.id !== aisle.id &&
+          m.kind !== "area" &&
+          modulesOverlap(candidate, m, 0.5),
+      )
+    )
+      break;
     fitted = candidate;
   }
   return fitted;
+}
+/** Repair misplaced fixtures after a shape change. Keep IDs and valid placements. */
+export function arrangeFloor(floor: DesignFloor): DesignFloor {
+  const placed: DesignModule[] = [];
+  const lowX = Math.min(...floor.outline.map((p) => p.x)),
+    highX = Math.max(...floor.outline.map((p) => p.x));
+  const lowZ = Math.min(...floor.outline.map((p) => p.z)),
+    highZ = Math.max(...floor.outline.map((p) => p.z));
+  const valid = (m: DesignModule) =>
+    containsModule(floor, m) &&
+    !placed.some((p) => p.kind !== "area" && modulesOverlap(m, p));
+  const order = [...floor.modules].sort(
+    (a, b) =>
+      Number(!["inbound", "outbound"].includes(a.kind)) -
+      Number(!["inbound", "outbound"].includes(b.kind)),
+  );
+  for (const original of order) {
+    let next = { ...original };
+    if (next.kind === "area") {
+      placed.push(next);
+      continue;
+    }
+    if (["inbound", "outbound"].includes(next.kind)) {
+      const rear = [
+        localPoint(next, -next.width / 2, -next.depth / 2),
+        localPoint(next, next.width / 2, -next.depth / 2),
+      ];
+      const aligned = floor.outline.some((a, i) =>
+        rear.every((p) =>
+          onSegment(a, floor.outline[(i + 1) % floor.outline.length], p),
+        ),
+      );
+      if (valid(next) && aligned) {
+        placed.push(next);
+        continue;
+      }
+      const candidates: DesignModule[] = [];
+      for (let i = 0; i < floor.outline.length; i++) {
+        const a = floor.outline[i],
+          b = floor.outline[(i + 1) % floor.outline.length];
+        const dx = b.x - a.x,
+          dz = b.z - a.z,
+          length = Math.hypot(dx, dz);
+        if (Math.abs(dx) > 0.001 && Math.abs(dz) > 0.001) continue;
+        if (length < next.width) continue;
+        for (
+          let t = next.width / 2;
+          t <= length - next.width / 2 + 0.001;
+          t += next.width + 0.5
+        ) {
+          const anchor = {
+            x: a.x + (dx * t) / length,
+            z: a.z + (dz * t) / length,
+          };
+          for (const rotation of [0, 90, 180, 270] as const) {
+            const offset = localPoint(
+              { ...next, x: 0, z: 0, rotation },
+              0,
+              -next.depth / 2,
+            );
+            const candidate = {
+              ...next,
+              rotation,
+              x: anchor.x - offset.x,
+              z: anchor.z - offset.z,
+            };
+            const rear = [
+              localPoint(candidate, -candidate.width / 2, -candidate.depth / 2),
+              localPoint(candidate, candidate.width / 2, -candidate.depth / 2),
+            ];
+            if (rear.every((p) => onSegment(a, b, p)) && valid(candidate))
+              candidates.push(candidate);
+          }
+        }
+      }
+      candidates.sort(
+        (a, b) =>
+          Math.hypot(a.x - original.x, a.z - original.z) -
+          Math.hypot(b.x - original.x, b.z - original.z),
+      );
+      next = candidates[0] || next;
+    } else if (!valid(next)) {
+      // Try short shelves before searching: an L-shaped room may have a shorter arm.
+      if (next.kind === "aisle") {
+        const fit = fitDesignAisle({ ...floor, modules: placed }, next);
+        if (fit) next = { ...next, bays: Math.min(next.bays, fit.bays) };
+      }
+      if (!valid(next)) {
+        const size = moduleSize(next),
+          positions: DesignPoint[] = [];
+        for (
+          let z = lowZ + size.depth / 2 + 0.5;
+          z <= highZ - size.depth / 2 - 0.5;
+          z += size.depth + 0.6
+        )
+          for (
+            let x = lowX + size.width / 2 + 0.5;
+            x <= highX - size.width / 2 - 0.5;
+            x += size.width + 0.6
+          )
+            positions.push({ x, z });
+        positions.sort(
+          (a, b) =>
+            Math.hypot(a.x - next.x, a.z - next.z) -
+            Math.hypot(b.x - next.x, b.z - next.z),
+        );
+        const target = positions.find((p) => valid({ ...next, ...p }));
+        if (target)
+          next = {
+            ...next,
+            ...target,
+            route: next.route.map((p) => ({
+              x: p.x + target.x - original.x,
+              z: p.z + target.z - original.z,
+            })),
+          };
+      }
+    }
+    placed.push(next);
+  }
+  const map = new Map(placed.map((m) => [m.id, m]));
+  return { ...floor, modules: floor.modules.map((m) => map.get(m.id)!) };
 }
 export function modulesOverlap(
   a: DesignModule,
@@ -577,7 +783,7 @@ export function designFromLayout(c: WarehouseConfig, layout: Layout): Design {
   }
   return {
     version: 1,
-    grid: 0.5,
+    grid: 0.3048,
     floors: [
       {
         id: "floor-1",
@@ -640,9 +846,9 @@ export function populateArea(
     gap = kind === "aisle" ? 1.5 : 0.8;
   const cols = Math.floor((zone.width + 0.01) / (size.width + gap)),
     rows = Math.floor((zone.depth + 0.01) / (size.depth + gap));
-  if (cols * rows > 100 || cols * rows < 1)
+  if (cols * rows < 1)
     throw new Error(
-      "This area cannot fit the chosen modules, or would add more than 100. Adjust its dimensions.",
+      "This area is too small for these shelves or tables. Make the area bigger or use smaller modules.",
     );
   let number = Math.max(
     0,
@@ -673,40 +879,6 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
     packing: [0, 0],
     outbound: [0, 0],
   };
-  const projected = design.floors.reduce(
-    (sum, f) =>
-      sum +
-      f.modules.reduce(
-        (n, m) =>
-          n +
-          (m.kind === "aisle"
-            ? 2 * m.bays * m.levels * m.bins
-            : [
-                  "inbound",
-                  "outbound",
-                  "staging",
-                  "packing",
-                  "quality",
-                  "returns",
-                ].includes(m.kind)
-              ? 1
-              : 0),
-        0,
-      ),
-    0,
-  );
-  if (projected > 12000)
-    return {
-      locations,
-      racks,
-      centers,
-      capacity: 0,
-      requiredWidth: c.width,
-      requiredDepth: c.depth,
-      errors: [
-        "The design exceeds 12,000 addressable locations. Reduce rack modules or levels.",
-      ],
-    };
   let routeChecks = 0;
   const seen = new Set<string>();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -900,10 +1072,6 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
       }
     });
   });
-  if (locations.length > 12000)
-    errors.push(
-      "The design exceeds 12,000 addressable locations. Reduce rack modules or levels.",
-    );
   if (new Set(locations.map((l) => l.id)).size !== locations.length)
     errors.push("Aisle/station numbers must be unique per kind on each floor.");
   for (const zone of Object.keys(centers) as Zone[]) {
