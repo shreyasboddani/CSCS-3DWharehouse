@@ -21,6 +21,7 @@ type Options = {
   config: WarehouseConfig;
   records: OperationalRecord[];
   compact: boolean;
+  quality?: "auto" | "studio" | "efficient";
   designPreview: boolean;
   onSelect: (id: string) => void;
   onHover: (id: string) => void;
@@ -28,7 +29,9 @@ type Options = {
   onExitWalk: () => void;
 };
 export function createWarehouseScene(host: HTMLElement, options: Options) {
-  const { config: c, compact } = options;
+  const { config: c, compact, quality = "auto" } = options;
+  let needsDraw = true, activeUntil = 0;
+  const wake = () => { needsDraw = true; activeUntil = performance.now() + 1800; };
   const world = buildWarehouseWorld(options),
     scene = new T.Scene();
   scene.add(world.root);
@@ -48,8 +51,10 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     world.dispose();
     throw error;
   }
-  renderer.setPixelRatio(Math.min(devicePixelRatio, compact ? 1.2 : 1.4));
-  renderer.shadowMap.enabled = !compact;
+  const studio = quality === "studio";
+  const efficient = quality === "efficient" || (quality === "auto" && world.layout.racks.length >= 160);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, compact || efficient ? 1 : studio ? 2 : 1.4));
+  renderer.shadowMap.enabled = !compact && !efficient;
   renderer.shadowMap.type = T.PCFShadowMap;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = true;
@@ -73,7 +78,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     c.depth * 0.45,
   );
   sun.castShadow = !compact;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(studio ? 3072 : 2048, studio ? 3072 : 2048);
   const extent = Math.max(c.width, c.depth) * 0.7;
   Object.assign(sun.shadow.camera, {
     left: -extent,
@@ -106,7 +111,8 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   controls.minDistance = 2;
   controls.maxDistance = size * 2.3;
   controls.enabled = !compact;
-  const composer = compact ? null : new EffectComposer(renderer);
+  controls.addEventListener("change", wake);
+  const composer = compact || efficient ? null : new EffectComposer(renderer);
   let ao: SSAOPass | null = null;
   if (composer) {
     composer.addPass(new RenderPass(scene, camera));
@@ -166,6 +172,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     routeLine.visible = walkPath.length > 0;
   }
   function setKey(key: string, pressed: boolean) {
+    wake();
     if (pressed) {
       keys.add(key);
       walkPath = [];
@@ -173,6 +180,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     } else keys.delete(key);
   }
   function focus(id?: string, nextMode: ViewMode = "orbit", floorId?: string) {
+    wake();
     const previous = mode;
     mode = nextMode;
     controls.enabled = mode !== "walk" && !compact;
@@ -347,7 +355,9 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     let id =
       locs && hit.instanceId !== undefined
         ? locs[hit.instanceId].id
-        : hit.object.userData.locationId;
+        : hit.instanceId !== undefined
+          ? hit.object.userData.instanceIds?.[hit.instanceId]
+          : hit.object.userData.locationId;
     let ancestor: T.Object3D | null = hit.object;
     while (!id && ancestor) {
       id =
@@ -364,16 +374,19 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
         hit.object === world.ground || hit.object.userData.walkSurface === true,
     };
   }
+  let lastHoverTime = 0;
   let down: { x: number; y: number; lastX: number; lastY: number } | null =
       null,
     moved = false;
   function pointerDown(e: PointerEvent) {
+    wake();
     renderer.domElement.focus({ preventScroll: true });
     down = { x: e.clientX, y: e.clientY, lastX: e.clientX, lastY: e.clientY };
     moved = false;
   }
   function pointerMove(e: PointerEvent) {
     if (down) {
+      wake();
       const dx = e.clientX - down.lastX,
         dy = e.clientY - down.lastY;
       down.lastX = e.clientX;
@@ -387,6 +400,9 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
       }
       if (mode !== "walk" && moved) flight = null;
     } else if (!compact) {
+      const now = performance.now();
+      if (now - lastHoverTime < 70) return;
+      lastHoverTime = now;
       const hit = hitAt(e),
         id = hit?.id || "";
       if (id !== lastHover) {
@@ -466,7 +482,8 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     ao?.setSize(Math.ceil(w * 0.5), Math.ceil(h * 0.5));
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    if (compact) draw();
+    needsDraw = true;
+    draw();
   }
   const observer = new ResizeObserver(resize);
   observer.observe(host);
@@ -477,6 +494,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   });
   visibilityObserver.observe(host);
   resize();
+  const drawnPosition = new T.Vector3(Infinity, Infinity, Infinity), drawnRotation = new T.Quaternion();
   let frame = 0,
     last = performance.now(),
     elapsed = 0;
@@ -492,7 +510,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     }
     const dt = Math.min((now - last) / 1000, 0.04);
     last = now;
-    elapsed += dt;
+    if (now < activeUntil) elapsed += dt;
     if (mode === "walk") {
       if (walkPath.length) {
         const goal = walkPath[0],
@@ -526,7 +544,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
             arrivalLook = null;
           }
         }
-      } else {
+      } else if (keys.size) {
         const forward =
             Number(keys.has("w") || keys.has("ArrowUp")) -
             Number(keys.has("s") || keys.has("ArrowDown")),
@@ -576,12 +594,17 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
       }
       controls.update();
     }
-    if (!reduced) world.animate(elapsed);
-    if (!reduced)
+    const playing = !reduced && now < activeUntil;
+    if (playing) world.animate(elapsed);
+    if (playing)
       world.operators.forEach(({ arm, phase }) => {
         arm.rotation.x = Math.sin(elapsed * 1.3 + phase) * 0.04;
       });
-    if (!document.hidden) draw();
+    const changed = !camera.position.equals(drawnPosition) || !camera.quaternion.equals(drawnRotation);
+    if (!document.hidden && (needsDraw || changed || playing || walkPath.length || flight)) {
+      draw(); needsDraw = false;
+      drawnPosition.copy(camera.position); drawnRotation.copy(camera.quaternion);
+    }
     if (!compact) frame = requestAnimationFrame(animate);
   }
   focus(undefined, "orbit");
@@ -589,11 +612,13 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
   return {
     focus,
     setAutomation: (state?: AutomationState) => {
+      wake();
       world.setAutomation(state);
       renderer.shadowMap.needsUpdate = true;
     },
     setKey,
     setExterior: (value: boolean) => {
+      wake();
       exterior = value;
       world.ceiling.visible = mode === "walk" || exterior;
       world.setShell(mode === "walk" || exterior);
@@ -602,6 +627,13 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
     exportModel: async () => {
       const { GLTFExporter } =
         await import("three/addons/exporters/GLTFExporter.js");
+      const proxies: T.Object3D[] = [];
+      world.root.traverse((o) => {
+        if (o instanceof T.Mesh && !Array.isArray(o.material) && !o.material.colorWrite) {
+          if (o.visible) proxies.push(o);
+          o.visible = false;
+        }
+      });
       const previous = world.highlight.visible;
       world.highlight.visible = false;
       const roof = world.ceiling.visible,
@@ -615,6 +647,7 @@ export function createWarehouseScene(host: HTMLElement, options: Options) {
         });
         return new Blob([result as ArrayBuffer], { type: "model/gltf-binary" });
       } finally {
+        proxies.forEach((o) => { o.visible = true; });
         world.highlight.visible = previous;
         world.ceiling.visible = roof;
         world.interiorShell.visible = shell;

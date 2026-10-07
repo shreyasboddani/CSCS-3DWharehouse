@@ -867,7 +867,7 @@ export function populateArea(
       });
   return { ...floor, modules: [...floor.modules, ...additions] };
 }
-export function generateDesignLayout(c: WarehouseConfig): Layout {
+export function generateDesignLayout(c: WarehouseConfig, includeStorage = true): Layout {
   const design = c.design!,
     errors: string[] = [],
     locations: Location[] = [],
@@ -1017,7 +1017,7 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
             bins: m.bins,
             moduleId: m.id,
           });
-          for (let b = 1; b <= m.bays; b++)
+          if (includeStorage) for (let b = 1; b <= m.bays; b++)
             for (let l = 1; l <= m.levels; l++)
               for (let bin = 1; bin <= m.bins; bin++) {
                 const id = `${prefix}A${pad(m.number)}-${side}-B${pad(b)}-L${pad(l)}-${pad(bin)}`,
@@ -1094,7 +1094,7 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
     errors.push("External location IDs must be unique.");
   if (new Set(rules.map((r) => r.locationId)).size !== rules.length)
     errors.push("Capacity rules must be unique per location.");
-  if (c.locationMappings?.some((m) => !ids.has(m.locationId)))
+  if (includeStorage && c.locationMappings?.some((m) => !ids.has(m.locationId)))
     errors.push("The design removes an externally mapped address.");
   if (
     rules.some((r) =>
@@ -1106,13 +1106,13 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
     errors.push(
       "Capacity rules require a storage, staging, or packing location.",
     );
-  if (c.locationRules?.some((r) => !ids.has(r.locationId)))
+  if (includeStorage && c.locationRules?.some((r) => !ids.has(r.locationId)))
     errors.push("The design removes an address with a capacity rule.");
   return {
     locations,
     racks,
     centers,
-    capacity: locations.filter((l) => l.zone === "storage").length,
+    capacity: racks.reduce((n, r) => n + (r.bays || 0) * (r.levels || 0) * (r.bins || 0), 0),
     requiredWidth: c.width,
     requiredDepth: c.depth,
     errors: [...new Set(errors)].slice(0, 60),

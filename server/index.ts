@@ -13,6 +13,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { imageUploadSchema, imageSignature } from "../src/domain/media.ts";
 import { draftInputSchema } from "../src/domain/drafts.ts";
 import {
   applyAutomation,
@@ -112,6 +113,8 @@ export function createApplication(
     CREATE INDEX IF NOT EXISTS warehouse_tenant ON warehouses(tenant_id);
     CREATE TABLE IF NOT EXISTS archived_warehouses (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), version INTEGER NOT NULL, payload TEXT NOT NULL, archived_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS archived_warehouse_tenant ON archived_warehouses(tenant_id);
+    CREATE TABLE IF NOT EXISTS record_images (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), warehouse_id TEXT NOT NULL, mime TEXT NOT NULL, data TEXT NOT NULL, digest TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(tenant_id,warehouse_id,digest));
+    CREATE INDEX IF NOT EXISTS record_image_tenant ON record_images(tenant_id,warehouse_id);
     CREATE TABLE IF NOT EXISTS auth_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset BIGINT NOT NULL);
     CREATE INDEX IF NOT EXISTS auth_attempt_expiry ON auth_attempts(reset);
     CREATE INDEX IF NOT EXISTS session_expiry ON sessions(expires);
@@ -692,6 +695,34 @@ export function createApplication(
           });
           return;
         }
+        const imageMatch = pathname.match(/^\/api\/v1\/warehouses\/([a-f0-9-]{36})\/images(?:\/([a-f0-9-]{36}))?$/);
+        if (imageMatch) {
+          const warehouse = await getWarehouse(imageMatch[1], user);
+          if (method === "POST" && !imageMatch[2]) {
+            const input = imageUploadSchema.parse(await readBody(req));
+            const bytes = Buffer.from(input.data, "base64");
+            if (!imageSignature(bytes, input.mime) || bytes.toString("base64") !== input.data)
+              throw new HttpError(422, "Choose a valid JPG, PNG or WebP photo under 250 KB after compression.");
+            const digest = createHash("sha256").update(bytes).digest("hex");
+            await db.prepare("INSERT INTO record_images VALUES (?,?,?,?,?,?,?) ON CONFLICT (tenant_id,warehouse_id,digest) DO NOTHING")
+              .run(randomUUID(), user.tenant_id, warehouse.id, input.mime, input.data, digest, new Date().toISOString());
+            const stored = await db.prepare("SELECT id FROM record_images WHERE tenant_id=? AND warehouse_id=? AND digest=?")
+              .get(user.tenant_id, warehouse.id, digest) as { id: string };
+            json({ imageUrl: `/api/v1/warehouses/${warehouse.id}/images/${stored.id}` }, 201);
+            return;
+          }
+          if (method === "GET" && imageMatch[2]) {
+            const image = await db.prepare("SELECT mime,data FROM record_images WHERE id=? AND tenant_id=? AND warehouse_id=?")
+              .get(imageMatch[2], user.tenant_id, warehouse.id) as { mime: string; data: string } | undefined;
+            if (!image) throw new HttpError(404, "Photo not found.");
+            res.setHeader("Content-Type", image.mime);
+            res.setHeader("Cache-Control", "private, no-store");
+            res.setHeader("X-Content-Type-Options", "nosniff");
+            res.end(Buffer.from(image.data, "base64"));
+            return;
+          }
+          throw new HttpError(405, "This photo request is not supported.");
+        }
         const automationMatch = pathname.match(
           /^\/api\/v1\/warehouses\/([a-zA-Z0-9-]+)\/automation$/,
         );
@@ -911,7 +942,7 @@ export function createApplication(
       );
       res.setHeader(
         "Content-Security-Policy",
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
       );
       res.setHeader(
         "Cache-Control",

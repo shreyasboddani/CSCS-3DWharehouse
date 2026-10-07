@@ -16,7 +16,7 @@ export function FloorPlan({
   records?: OperationalRecord[];
   onSelect?: (id: string) => void;
 }) {
-  const layout = generateLayout(config),
+  const layout = generateLayout(config, onSelect ? "full" : "structure"),
     occupied = new Set(
       records
         .filter(

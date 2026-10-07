@@ -1,6 +1,8 @@
 import * as T from "three";
+import { industrialAssets, industrialSurfaces } from "./industrialAssets";
 import { aisleNumber } from "./aisleNumber";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { instanceStatic } from "./instanceStatic";
+import { wallSections, roofSpans } from "../domain/architecture";
 import { generateLayout } from "../domain/warehouse";
 import type {
   WarehouseConfig,
@@ -76,10 +78,8 @@ export function buildDesignWorld({
     dark = material("#23354c"),
     cardboard = material("#c8af86"),
     pallet = material("#ab906c"),
-    teal = material("#32aca4"),
     skin = material("#d6ae8c"),
-    vest = material("#d8c65e"),
-    red = material("#bf5554");
+    vest = material("#d8c65e");
 
   let seed = 918273;
   const random = () => {
@@ -97,24 +97,17 @@ export function buildDesignWorld({
     textures.add(map);
     return map;
   }
-  const concrete = texture((ctx) => {
-    ctx.fillStyle = "#d1d9df";
-    ctx.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 12000; i++) {
-      ctx.fillStyle = random() > 0.5 ? "#8293a015" : "#f9fbfd30";
-      ctx.fillRect(
-        random() * 512,
-        random() * 512,
-        1 + random() * 2,
-        1 + random() * 2,
-      );
-    }
-    ctx.strokeStyle = "#9fadb726";
-    ctx.strokeRect(0, 0, 512, 512);
-  });
-  concrete.wrapS = concrete.wrapT = T.RepeatWrapping;
-  concrete.repeat.set(0.2, 0.2);
-  floorMat.map = concrete;
+  const resources = { geometries, materials, textures };
+  const assets = industrialAssets(resources, !compact);
+  const finishes = industrialSurfaces(resources, [1 / 6, 1 / 6]);
+  floorMat.map = finishes.concrete;
+  floorMat.bumpMap = finishes.concreteDetail;
+  floorMat.roughnessMap = finishes.concreteDetail;
+  floorMat.bumpScale = 0.012;
+  floorMat.color.set(c.floorFinish === "slate" ? "#929caa" : "#ffffff");
+  pallet.map = finishes.wood;
+  pallet.color.set("#ffffff");
+  steel.roughnessMap = finishes.metal;
   cardboard.color.set("#ffffff");
   cardboard.map = texture((ctx) => {
     ctx.fillStyle = "#c7a778";
@@ -278,6 +271,8 @@ export function buildDesignWorld({
     floors.push(group);
     roofs.push(roof);
     walls.push(wallGroup);
+    wallGroup.userData.batchStatic = true;
+    roof.userData.batchStatic = true;
     group.name = f.name;
     group.userData.floorId = f.id;
     if (fi) slab(group, fi, elevation, 0.3, floorMat);
@@ -287,70 +282,59 @@ export function buildDesignWorld({
         b = f.outline[(j + 1) % f.outline.length],
         length = Math.hypot(a.x - b.x, a.z - b.z),
         angle = -Math.atan2(b.z - a.z, b.x - a.x);
-      const wall = box(
-        wallGroup,
-        (a.x + b.x) / 2,
-        elevation + f.height / 2,
-        (a.z + b.z) / 2,
-        length,
-        f.height,
-        0.15,
-        white,
-      );
-      wall.rotation.y = angle;
-      const trim = box(
-        wallGroup,
-        (a.x + b.x) / 2,
-        elevation + 0.35,
-        (a.z + b.z) / 2,
-        length,
-        0.7,
-        0.2,
-        dark,
-      );
-      trim.rotation.y = angle;
-      for (let k = 1; k < length / 4; k++) {
-        const t = (k * 4) / length,
-          p = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
-        const rib = box(
-          wallGroup,
-          p.x,
-          elevation + f.height / 2,
-          p.z,
-          0.045,
-          f.height - 0.2,
-          0.2,
-          steel,
-        );
-        rib.rotation.y = angle;
+      const glazed = f.height >= 6;
+      const bodyTop = glazed ? f.height - 1.8 : f.height;
+      const sections = wallSections(f, j, bodyTop);
+      for (const section of sections) {
+        const wall = box(wallGroup, section.x, elevation + section.bottom + section.height / 2,
+          section.z, section.width, section.height, 0.18, white);
+        wall.rotation.y = section.rotation;
+        if (section.bottom === 0) {
+          const base = box(wallGroup, section.x, elevation + 0.28, section.z,
+            section.width, 0.56, 0.22, dark);
+          base.rotation.y = section.rotation;
+        }
       }
-      for (let k = 2; k < length - 2; k += 6) {
-        const t = k / length,
-          p = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
-        const window = box(
-          wallGroup,
-          p.x,
-          elevation + f.height - 1.1,
-          p.z,
-          Math.min(3, length - 4),
-          0.75,
-          0.21,
-          glass,
-        );
-        window.rotation.y = angle;
+      if (glazed) {
+        const ribbon = box(wallGroup, (a.x + b.x) / 2, elevation + f.height - 1.3,
+          (a.z + b.z) / 2, length, 1, 0.1, glass);
+        ribbon.rotation.y = angle;
+        const cap = box(wallGroup, (a.x + b.x) / 2, elevation + f.height - 0.4,
+          (a.z + b.z) / 2, length, 0.8, 0.2, white);
+        cap.rotation.y = angle;
       }
-
-      const fascia = box(
-        wallGroup,
-        (a.x + b.x) / 2,
-        elevation + f.height - 0.2,
-        (a.z + b.z) / 2,
-        length,
-        0.25,
-        0.22,
-        dark,
-      );
+      for (let distance = 0.1; distance < length; distance += 1.5) {
+        const t = distance / length;
+        const x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
+        const section = sections.find((v) => Math.hypot(v.x - x, v.z - z) <= v.width / 2 + 0.001);
+        if (section) {
+          const rib = box(wallGroup, x, elevation + section.bottom + section.height / 2,
+            z, 0.032, section.height, 0.21, steel);
+          rib.rotation.y = angle;
+        }
+        if (glazed) {
+          const mullion = box(wallGroup, x, elevation + f.height - 1.3, z, 0.06, 1.1, 0.15, dark);
+          mullion.rotation.y = angle;
+        }
+      }
+      const fascia = box(wallGroup, (a.x + b.x) / 2, elevation + f.height - 0.12,
+        (a.z + b.z) / 2, length, 0.25, 0.25, dark);
       fascia.rotation.y = angle;
+    }
+    for (let z = -c.depth / 2 + 3; z < c.depth / 2 - 1; z += 8) {
+      for (const span of roofSpans(f, z)) {
+        const width = span.end - span.start - 0.3;
+        if (width <= 0) continue;
+        const center = (span.start + span.end) / 2;
+        box(roof, center, elevation + f.height - 0.16, z, width, 0.16, 0.1, steel);
+        box(roof, center, elevation + f.height - 0.95, z, width, 0.08, 0.1, steel);
+        for (let x = span.start + 0.15; x + 2 < span.end - 0.15; x += 2) {
+          rod(roof, new T.Vector3(x, elevation + f.height - 0.16, z),
+            new T.Vector3(x + 1, elevation + f.height - 0.95, z), 0.035, steel);
+          rod(roof, new T.Vector3(x + 1, elevation + f.height - 0.95, z),
+            new T.Vector3(x + 2, elevation + f.height - 0.16, z), 0.035, steel);
+        }
+      }
     }
 
     for (let x = -c.width / 2 + 4; x < c.width / 2; x += 8)
@@ -514,6 +498,7 @@ export function buildDesignWorld({
             colorWrite: false,
             depthWrite: false,
           });
+          pickMaterial.visible = false;
           materials.add(pickMaterial);
           const proxies = new T.InstancedMesh(
             cube,
@@ -612,80 +597,10 @@ export function buildDesignWorld({
         );
         if (truck || designPreview) {
           const truckGroup = new T.Group();
+          truckGroup.position.set(0, -0.5, -m.depth / 2);
           g.add(truckGroup);
           truckGroup.userData.locationId = loc?.id;
-          box(truckGroup, 0, 1.6, -m.depth / 2 - 5.1, 2.6, 2.7, 9.4, white);
-          box(truckGroup, 0, 0.18, -m.depth / 2 - 5.1, 2.4, 0.3, 9.4, dark);
-          box(truckGroup, 0, 0.85, -m.depth / 2 - 10.9, 2.5, 2.4, 2.4, blue);
-          box(truckGroup, 0, 1.45, -m.depth / 2 - 12.12, 2.1, 0.8, 0.03, dark);
-
-          for (const x of [-1.31, 1.31]) {
-            for (let z = -m.depth / 2 - 0.6; z > -m.depth / 2 - 9.7; z -= 0.75)
-              box(truckGroup, x, 1.6, z, 0.025, 2.5, 0.035, steel);
-            box(
-              truckGroup,
-              x,
-              0.27,
-              -m.depth / 2 - 5.1,
-              0.035,
-              0.06,
-              9.4,
-              yellow,
-            );
-            box(
-              truckGroup,
-              x,
-              1.45,
-              -m.depth / 2 - 10.9,
-              0.025,
-              0.72,
-              1.1,
-              glass,
-            );
-            box(
-              truckGroup,
-              x * 1.16,
-              1.35,
-              -m.depth / 2 - 11.55,
-              0.18,
-              0.32,
-              0.16,
-              dark,
-            );
-          }
-          box(
-            truckGroup,
-            0,
-            1.45,
-            -m.depth / 2 - 12.125,
-            2.05,
-            0.82,
-            0.04,
-            glass,
-          );
-          box(truckGroup, 0, 0.4, -m.depth / 2 - 12.14, 1.3, 0.38, 0.045, dark);
-          for (const x of [-0.93, 0.93])
-            box(
-              truckGroup,
-              x,
-              0.4,
-              -m.depth / 2 - 12.16,
-              0.25,
-              0.12,
-              0.05,
-              led,
-            );
-          for (const x of [-1.12, 1.12])
-            box(truckGroup, x, 0.25, -m.depth / 2 - 0.3, 0.18, 0.16, 0.08, red);
-          for (const x of [-1.15, 1.15])
-            for (const z of [-2, -3, -10.8]) {
-              const geo = new T.CylinderGeometry(0.45, 0.45, 0.25, 12);
-              geo.rotateZ(Math.PI / 2);
-              geometries.add(geo);
-              const wheel = new T.Mesh(geo, dark);
-              wheel.position.set(x, -0.03, -m.depth / 2 + z);
-              truckGroup.add(wheel);
-            }
+          assets.truck(truckGroup);
         }
       } else if (
         m.kind === "belt" ||
@@ -764,21 +679,7 @@ export function buildDesignWorld({
         mobileRobots.includes(m.kind as (typeof mobileRobots)[number])
       ) {
         g.userData.animated = true;
-        box(g, 0, m.height / 2, 0, m.width, m.height, m.depth, color);
-        box(
-          g,
-          0,
-          m.height + 0.04,
-          0,
-          m.width * 0.7,
-          0.08,
-          m.depth * 0.65,
-          dark,
-        );
-        for (const x of [-m.width / 2, m.width / 2])
-          for (const z of [-m.depth / 3, m.depth / 3])
-            box(g, x, 0.12, z, 0.1, 0.24, 0.24, dark);
-        box(g, 0, m.height + 0.1, m.depth / 3, 0.2, 0.12, 0.15, teal);
+        assets.robot(g, m.width, m.height, m.depth);
         mobile.push({ object: g, module: m, floorIndex: fi });
         if (m.route.length > 1) {
           const geo = new T.BufferGeometry().setFromPoints(
@@ -794,7 +695,12 @@ export function buildDesignWorld({
         for (const x of [-m.width / 2 + 0.15, m.width / 2 - 0.15])
           for (const z of [-m.depth / 2 + 0.15, m.depth / 2 - 0.15])
             box(g, x, m.height / 2, z, 0.1, m.height, 0.1, dark);
-        box(g, m.width * 0.25, m.height + 0.3, 0, 0.5, 0.6, 0.4, dark);
+        box(g, m.width * 0.25, m.height + 0.13, -m.depth * 0.18, 0.08, 0.26, 0.08, steel);
+        box(g, m.width * 0.25, m.height + 0.43, -m.depth * 0.18, 0.55, 0.34, 0.055, dark);
+        box(g, m.width * 0.25, m.height + 0.43, -m.depth * 0.18 + 0.032, 0.48, 0.27, 0.012, glass);
+        box(g, m.width * 0.25, m.height + 0.02, m.depth * 0.04, 0.42, 0.035, 0.15, dark);
+        box(g, -m.width * 0.32, m.height + 0.14, -m.depth * 0.25, 0.35, 0.28, 0.27, white);
+        box(g, -m.width * 0.32, m.height + 0.2, -m.depth * 0.25 + 0.14, 0.27, 0.035, 0.01, dark);
         box(g, -m.width * 0.25, m.height + 0.15, 0, 0.5, 0.3, 0.5, cardboard);
 
         if (!compact && ["packing", "quality"].includes(m.kind)) {
@@ -837,55 +743,16 @@ export function buildDesignWorld({
               cardboard,
             );
       } else if (m.kind === "forklift") {
-        box(g, 0, 0.45, 0, 1.1, 0.9, 1.8, color);
-        for (const x of [-0.5, 0.5])
-          box(g, x, 1.7, -0.65, 0.08, 2.4, 0.1, dark);
-        box(g, 0, 2.3, 0, 1.2, 0.12, 1.4, dark);
-        for (const x of [-0.4, 0.4])
-          box(g, x, 0.1, -1.5, 0.12, 0.1, 1.5, steel);
+        const lift = assets.forklift(g);
+        lift.scale.set(m.width / 1.15, m.height / 2.6, m.depth / 2.5);
       } else {
         box(g, 0, m.height / 2, 0, m.width, m.height, m.depth, color);
         label(g, m.label, 0, m.height + 0.02, 0, Math.min(3, m.width));
       }
     }
-    // Batch static parts per material while retaining selectable module groups and animated robots.
-    group.traverse((object) => {
-      if (
-        !(object instanceof T.Group) ||
-        object.userData.animated ||
-        !object.userData.moduleId
-      )
-        return;
-      const groups = new Map<T.Material, T.Mesh[]>();
-      for (const child of object.children) {
-        if (
-          child instanceof T.Mesh &&
-          !Array.isArray(child.material) &&
-          (child.geometry === cube || child.geometry === cylinder) &&
-          !operators.some((o) => o.arm === child)
-        ) {
-          const list = groups.get(child.material) || [];
-          list.push(child);
-          groups.set(child.material, list);
-        }
-      }
-      object.updateMatrix();
-      groups.forEach((meshes, mat) => {
-        const parts = meshes.map((mesh) => {
-          mesh.updateMatrix();
-          return mesh.geometry.clone().applyMatrix4(mesh.matrix);
-        });
-        const geo = mergeGeometries(parts, false);
-        parts.forEach((p) => p.dispose());
-        if (!geo) return;
-        geometries.add(geo);
-        const merged = new T.Mesh(geo, mat);
-        merged.castShadow = !compact;
-        merged.receiveShadow = true;
-        object.add(merged);
-        meshes.forEach((mesh) => mesh.removeFromParent());
-      });
-    });
+    instanceStatic(group);
+    instanceStatic(wallGroup);
+    instanceStatic(roof);
   });
   const highlightMat = new T.MeshBasicMaterial({
     color: "#20b9ad",
@@ -1000,6 +867,7 @@ export function buildDesignWorld({
     animate,
     dispose: () => {
       root.traverse((o) => {
+        if (o instanceof T.InstancedMesh) o.dispose();
         if (o instanceof T.Mesh) {
           const mats = Array.isArray(o.material) ? o.material : [o.material];
           mats.forEach((mat) => {

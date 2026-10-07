@@ -41,6 +41,7 @@ export default function WarehouseScene({
   const [failed, setFailed] = useState(false),
     [hover, setHover] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [quality, setQuality] = useState<"auto" | "studio" | "efficient">("auto");
   const [exterior, setExterior] = useState(false);
   const [floorId, setFloorId] = useState(initialFloorId || "");
   useEffect(() => {
@@ -61,6 +62,7 @@ export default function WarehouseScene({
         records,
         compact,
         designPreview,
+        quality,
         onSelect: (id) => {
           if (id.startsWith("module:")) setInspectedId(id.slice(7));
           else {
@@ -84,16 +86,16 @@ export default function WarehouseScene({
       console.error("Warehouse renderer unavailable", error);
       queueMicrotask(() => setFailed(true));
     }
-  }, [config, records, compact, designPreview, attempt]);
+  }, [config, records, compact, designPreview, attempt, quality]);
   useEffect(() => {
     controller.current?.setAutomation(automation);
-  }, [automation, config, records, compact, designPreview, attempt]);
+  }, [automation, config, records, compact, designPreview, attempt, quality]);
   useEffect(() => {
     controller.current?.focus(selected || focus, mode, floorId || undefined);
-  }, [selected, focus, mode, config, records, attempt, floorId]);
+  }, [selected, focus, mode, config, records, attempt, floorId, quality]);
   useEffect(() => {
     controller.current?.setExterior(exterior);
-  }, [exterior, config, records, attempt]);
+  }, [exterior, config, records, attempt, quality]);
   return (
     <div className="scene-wrapper">
       <div
@@ -119,6 +121,14 @@ export default function WarehouseScene({
       )}
       {!compact && !failed && (
         <>
+          <label className="scene-quality-control">
+            Graphics
+            <select value={quality} onChange={(e) => setQuality(e.target.value as typeof quality)}>
+              <option value="auto">Automatic</option>
+              <option value="studio">Studio lighting</option>
+              <option value="efficient">Lower GPU usage</option>
+            </select>
+          </label>
           {inspected && (
             <div className="scene-equipment-card">
               <button

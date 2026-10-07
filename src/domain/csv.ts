@@ -22,6 +22,7 @@ export const csvColumns = [
   "cargo",
   "heldFrom",
   "loadedOnTruckId",
+  "imageUrl",
 ];
 export function parseCsv(text: string): string[][] {
   if (text.length > 1000000) throw new Error("CSV files must be under 1 MB.");
@@ -171,4 +172,4 @@ export function exportCsv(records: OperationalRecord[]) {
 }
 export const sampleCsv =
   csvColumns.join(",") +
-  "\nINV-001,Inventory,Example product,In storage,A01-L-B01-L01-01,SKU-001,12,units,BATCH-001,,,,Example row - replace with your own data,,,";
+  "\nINV-001,Inventory,Example product,In storage,A01-L-B01-L01-01,SKU-001,12,units,BATCH-001,,,,Example row - replace with your own data,,,,";

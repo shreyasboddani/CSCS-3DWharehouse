@@ -187,7 +187,7 @@ export function DesignEditor({
       document.removeEventListener("click", leave, true);
     };
   }, [unsaved, currentConfig, draftData, onSaveDraft, signature, navigate]);
-  const layout = useMemo(() => generateLayout(currentConfig), [currentConfig]);
+  const layout = useMemo(() => generateLayout(currentConfig, "structure"), [currentConfig]);
   const recordIssue = useMemo(
     () => (records.length ? validateRecordSet(records, currentConfig) : null),
     [records, currentConfig],

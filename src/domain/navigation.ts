@@ -1,7 +1,16 @@
-import type { Layout, WarehouseConfig } from "./warehouse";
+import type { Location, Layout, WarehouseConfig } from "./warehouse";
 import { facilityFixtures } from "./facility";
 import { designWalkable } from "./design";
 export type Point2 = { x: number; z: number };
+const workLocations = new WeakMap<Layout, Location[]>();
+function workFor(layout: Layout) {
+  let locations = workLocations.get(layout);
+  if (!locations) {
+    locations = layout.locations.filter((l) => l.zone === "packing" || l.zone === "staging");
+    workLocations.set(layout, locations);
+  }
+  return locations;
+}
 export function isWalkable(
   point: Point2,
   config: WarehouseConfig,
@@ -22,7 +31,7 @@ export function isWalkable(
   )
     return false;
   if (
-    layout.locations.some(
+    workFor(layout).some(
       (l) =>
         (l.zone === "packing" &&
           Math.abs(point.x - l.x) < (config.template === "l-flow" ? 2 : 1.3) &&

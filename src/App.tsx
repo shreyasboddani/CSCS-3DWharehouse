@@ -1,3 +1,5 @@
+import { InventoryExplorer, PhotoEditor, ProductPhoto, LocationPicker } from "./app/InventoryExplorer";
+import { searchRecords } from "./domain/search";
 import { NumberInput } from "./app/NumberInput";
 import { squareFeet, feet, meters, formatFeet } from "./domain/units";
 import { DraftList } from "./app/DraftList";
@@ -9,6 +11,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useMemo,
   useState,
   useCallback,
   useRef,
@@ -34,6 +37,7 @@ import {
   defaultConfig,
   templates,
   generateLayout,
+  layoutCapacity,
   zones,
   kinds,
   allowedStatuses,
@@ -332,7 +336,7 @@ function Dashboard() {
       .includes(query.toLowerCase()),
   );
   const capacity = warehouses.reduce(
-    (sum, w) => sum + generateLayout(w.config).capacity,
+    (sum, w) => sum + layoutCapacity(w.config),
     0,
   );
   return (
@@ -446,7 +450,7 @@ function Dashboard() {
                     {formatFeet(w.config.width)} × {formatFeet(w.config.depth)}{" "}
                     ft
                   </span>
-                  <span>{generateLayout(w.config).capacity} locations</span>
+                  <span>{layoutCapacity(w.config)} locations</span>
                   <span>
                     {templates.find((t) => t.id === w.config.template)?.name}
                   </span>
@@ -610,7 +614,7 @@ function Builder() {
     },
     [id, setDraftParams],
   );
-  const layout = generateLayout(config);
+  const layout = useMemo(() => generateLayout(config, "structure"), [config]);
   const changeConfig = (next: WarehouseConfig) => {
     setUndoConfig(config);
     setConfig(next);
@@ -1209,6 +1213,7 @@ function RecordEditor({
   );
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [photoBusy, setPhotoBusy] = useState(false),
     layout = generateLayout(warehouse.config);
   const update = (key: keyof OperationalRecord, value: string | number) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -1298,21 +1303,8 @@ function RecordEditor({
               ))}
             </select>
           </label>
-          <label>
-            Location
-            <select
-              value={draft.locationId}
-              onChange={(e) => update("locationId", e.target.value)}
-            >
-              {layout.locations
-                .filter((l) => permitted[draft.kind].includes(l.zone))
-                .map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.code}
-                  </option>
-                ))}
-            </select>
-          </label>
+          <LocationPicker layout={layout} value={draft.locationId} zones={permitted[draft.kind]}
+            onChange={(id) => update("locationId", id)} />
           <label>
             SKU
             <input
@@ -1388,6 +1380,8 @@ function RecordEditor({
             }
           />
         </label>
+        {draft.kind !== "Truck" && <PhotoEditor warehouseId={warehouse.id} value={draft.imageUrl || ""}
+          onChange={(url) => update("imageUrl", url)} onBusy={setPhotoBusy} />}
         <label>
           Notes
           <textarea
@@ -1487,7 +1481,7 @@ function RecordEditor({
           <button type="button" className="button secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="button" disabled={busy}>
+          <button className="button" disabled={busy || photoBusy}>
             {busy ? "Saving…" : "Save record"}
           </button>
         </div>
@@ -1658,26 +1652,8 @@ function Twin({ preview = false }: { preview?: boolean }) {
       (zone === "all" || l.zone === zone) &&
       (l.code + " " + l.label).toLowerCase().includes(query.toLowerCase()),
   );
-  const visibleRecords = warehouse.records.filter(
-    (r) =>
-      (zone === "all" || locationById.get(r.locationId)?.zone === zone) &&
-      (
-        r.id +
-        " " +
-        r.label +
-        " " +
-        r.sku +
-        " " +
-        r.reference +
-        " " +
-        r.batch +
-        " " +
-        r.status +
-        " " +
-        r.destination
-      )
-        .toLowerCase()
-        .includes(query.toLowerCase()),
+  const visibleRecords = searchRecords(warehouse.records, query).filter((r) =>
+    zone === "all" || locationById.get(r.locationId)?.zone === zone,
   );
   const directoryKey = [warehouse.id, warehouse.version, zone, tab, query].join(
     "|",
@@ -1754,12 +1730,13 @@ function Twin({ preview = false }: { preview?: boolean }) {
           </Link>
           <h1>{warehouse.config.name}</h1>
           <p>
-            {warehouse.config.site} <span>·</span> {warehouse.config.width} ×{" "}
+            {warehouse.config.site} <span>·</span> {formatFeet(warehouse.config.width)} ×{" "}
             {formatFeet(warehouse.config.depth)} ft <span>·</span>{" "}
             {layout.capacity} storage locations
           </p>
         </div>
         <div className="actions">
+          <a className="button secondary small" href="#inventory">Find inventory</a>
           {!preview && (
             <>
               <button
@@ -1985,6 +1962,7 @@ function Twin({ preview = false }: { preview?: boolean }) {
                       </span>
                       <span className="source">{r.source}</span>
                     </div>
+                    {r.imageUrl && <ProductPhoto url={r.imageUrl} label={r.label} />}
                     <h3>{r.label}</h3>
                     <code>{r.id}</code>
                     <dl>
@@ -2145,6 +2123,16 @@ function Twin({ preview = false }: { preview?: boolean }) {
           )}
         </aside>
       </div>
+      <nav className="workspace-shortcuts" aria-label="Warehouse tools">
+        <a href="#inventory">Inventory & photos</a><a href="#warehouse-directory">Location directory</a>
+        {!preview && <button onClick={() => setWorkflow("import")}>Import records</button>}
+        <a href="#warehouse-activity">Recent activity</a>
+      </nav>
+      <InventoryExplorer records={warehouse.records}
+        onInspect={(r) => { setSelected(r.locationId); setZone("all"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        onEdit={preview ? undefined : (r) => { const location = locationById.get(r.locationId); if (location) setEditor({ location, record: r }); }}
+        onAdd={preview ? undefined : () => { const location = layout.locations.find((l) => l.zone === "storage"); if (location) setEditor({ location }); }}
+      />
       <OperationsOverview
         summary={summary}
         onSelect={(id) => {
@@ -2153,7 +2141,7 @@ function Twin({ preview = false }: { preview?: boolean }) {
           window.scrollTo({ top: 0, behavior: "smooth" });
         }}
       />
-      <section className="directory">
+      <section className="directory" id="warehouse-directory">
         <div className="list-heading">
           <div className="segmented">
             <button
@@ -2372,7 +2360,7 @@ function Twin({ preview = false }: { preview?: boolean }) {
       </section>
       {!preview && (
         <details className="warehouse-management">
-          <summary>Warehouse management & activity</summary>
+          <summary id="warehouse-activity">Warehouse management & activity</summary>
           <div className="activity-list">
             {[...warehouse.events]
               .reverse()

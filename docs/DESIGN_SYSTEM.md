@@ -29,3 +29,11 @@ Automation lab is a collapsed white/blue workspace panel with an explicit local 
 Label all physical inputs/readouts in ft, areas in ftÂ² and speed in ft/s; never relabel an unconverted metric value. Use buffered number inputs that commit on blur/Enter so unfinished typing does not rebuild the scene. Escape cancels the current numeric edit. Counts have no arbitrary maximum. Keep automatic arrangement on by default, offer a clear make-everything-fit action and an undo control, and preserve a manual-placement option. Show remaining physical layout problems directly.
 
 The custom plan has measured perimeter edges, an adaptive feet ruler, floor controls and automatic placement on building-size/shape changes. Undo/redo includes building dimensions. Floating camera-facing aisle signs use screen-relative sizing so distant large facilities retain readable aisle identifiers. Repeated decorative detail is sampled in long aisles without omitting addresses or aisle geometry.
+
+## Industrial detail and inventory workspace — 2026-10-07
+
+Preserve realistic geometry while simplifying controls. Shared truck, forklift and robot assets use rounded painted surfaces, rubber tires, metallic hubs, glazing and lighting. Concrete, timber, metal and asphalt textures are generated once per scene and disposed with it. Empty bins do not resemble occupied cartons. Custom facades use actual dock openings, clerestory glazing and roof framing that follows the saved footprint.
+
+Use spatially grouped instancing rather than expanded duplicate vertex buffers. Preserve per-instance selection and floor/shell visibility. Stock hit targets remain available without drawing empty proxies. Render only when camera, user interaction or playback requires a new frame. Automatic, Studio lighting and Lower GPU usage settings control rendering cost without deleting warehouse geometry or addresses.
+
+Inventory uses a white/blue searchable card workspace with actual product photos, explicit status, quantity/unit, address, edit and Locate in 3D controls. Paginate cards and show bounded location suggestions instead of inserting every bin into a native dropdown. Broken or missing images have a clear placeholder. Upload progress and failures remain visible; saving is disabled while an upload is pending.

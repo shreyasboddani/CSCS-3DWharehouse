@@ -1,38 +1,43 @@
 import * as T from "three";
+import { industrialAssets, industrialSurfaces } from "./industrialAssets";
 import { aisleNumber } from "./aisleNumber";
 import { usesTemplateGeometry } from "../domain/design";
 import { buildDesignWorld } from "./buildDesignWorld";
 import { dockPose, facilityFixtures } from "../domain/facility";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { instanceStatic } from "./instanceStatic";
 import { generateLayout, zones } from "../domain/warehouse";
 import type {
   WarehouseConfig,
   OperationalRecord,
   Location,
+  Layout,
 } from "../domain/warehouse";
 type Options = {
   config: WarehouseConfig;
   records: OperationalRecord[];
   designPreview: boolean;
   compact: boolean;
+  layoutOverride?: Layout;
 };
 export function buildWarehouseWorld({
   config: c,
   records,
   designPreview,
   compact,
+  layoutOverride,
 }: Options): Omit<
   ReturnType<typeof buildDesignWorld>,
   "ground" | "highlight"
 > & { ground: T.Mesh; highlight: T.Mesh; hitTargets?: T.Object3D[] } {
   if (c.design) {
     const legacyConfig = { ...c, design: undefined };
-    const legacy = generateLayout(legacyConfig);
+    const legacy = generateLayout(legacyConfig, "structure");
     if (usesTemplateGeometry(c, legacy))
       return {
         ...buildWarehouseWorld({
           config: legacyConfig,
+          layoutOverride: generateLayout(c),
           records,
           designPreview,
           compact,
@@ -41,7 +46,7 @@ export function buildWarehouseWorld({
       };
     return buildDesignWorld({ config: c, records, designPreview, compact });
   }
-  const layout = generateLayout(c),
+  const layout = layoutOverride || generateLayout(c),
     root = new T.Group(),
     interiorShell = new T.Group(),
     ceiling = new T.Group();
@@ -80,26 +85,6 @@ export function buildWarehouseWorld({
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 4294967296;
   };
-  const concreteMap = canvasTexture((ctx) => {
-    ctx.fillStyle = "#cdd6dd";
-    ctx.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 30000; i++) {
-      const shade = 190 + Math.floor(random() * 35);
-      ctx.fillStyle =
-        "rgba(" + shade + "," + (shade + 4) + "," + (shade + 7) + ",.15)";
-      ctx.fillRect(
-        random() * 512,
-        random() * 512,
-        1 + random() * 2,
-        1 + random() * 2,
-      );
-    }
-    ctx.strokeStyle = "#b9c5cf";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0, 0, 512, 512);
-  });
-  concreteMap.wrapS = concreteMap.wrapT = T.RepeatWrapping;
-  concreteMap.repeat.set(c.width / 8, c.depth / 8);
   const cardboardMap = canvasTexture((ctx) => {
     ctx.fillStyle = "#c7a778";
     ctx.fillRect(0, 0, 512, 512);
@@ -155,11 +140,27 @@ export function buildWarehouseWorld({
     vest: material("#d8c65e", 0.6),
     glass: material("#a4cbdc", 0.2, 0.3),
   };
-  m.floor.map = concreteMap;
+  const resources = { geometries, materials, textures };
+  const assets = industrialAssets(resources, !compact);
+  const finishes = industrialSurfaces(resources, [c.width / 6, c.depth / 6]);
+  m.floor.map = finishes.concrete;
+  m.floor.bumpMap = finishes.concreteDetail;
+  m.floor.bumpScale = 0.012;
+  m.floor.roughnessMap = finishes.concreteDetail;
+  m.floor.color.set(c.floorFinish === "slate" ? "#929caa" : "#ffffff");
+  m.wood.map = finishes.wood;
+  m.wood.color.set("#ffffff");
+  m.steel.roughnessMap = finishes.metal;
+  m.road.map = finishes.asphalt;
+  m.road.color.set("#ffffff");
+  m.road.bumpMap = finishes.asphalt;
+  m.road.bumpScale = 0.015;
+  m.white.roughness = 0.38;
   m.carton.map = cardboardMap;
-  m.empty.transparent = true;
-  m.empty.opacity = 0.28;
-  m.empty.wireframe = true;
+  // Empty slots are selection targets, never phantom inventory boxes.
+  m.empty.colorWrite = false;
+  m.empty.depthWrite = false;
+  m.empty.visible = false;
   m.glass.transparent = true;
   m.glass.opacity = 0.65;
   const led = new T.MeshStandardMaterial({
@@ -860,7 +861,14 @@ export function buildWarehouseWorld({
     transform: (l: Location, d: T.Object3D) => void,
     pickable = false,
   ) {
-    if (!locs.length) return null;
+    if (!locs.length) return;
+    const byAisle = new Map<number, Location[]>();
+    for (const location of locs) {
+      const list = byAisle.get(location.aisle || 0);
+      if (list) list.push(location); else byAisle.set(location.aisle || 0, [location]);
+    }
+    for (const aisleLocations of byAisle.values()) buildInstances(aisleLocations);
+    function buildInstances(locs: Location[]) {
     const instance = new T.InstancedMesh(geo, mat, locs.length),
       dummy = new T.Object3D();
     locs.forEach((l, i) => {
@@ -871,7 +879,7 @@ export function buildWarehouseWorld({
       dummy.updateMatrix();
       instance.setMatrixAt(i, dummy.matrix);
     });
-    instance.castShadow = !compact;
+    instance.castShadow = !compact && mat !== m.empty;
     instance.receiveShadow = true;
     root.add(instance);
     if (pickable) {
@@ -879,6 +887,7 @@ export function buildWarehouseWorld({
       hitTargets.push(instance);
     }
     return instance;
+    }
   }
   const binDepth = 2 / c.bins;
   instanced(
@@ -1054,36 +1063,7 @@ export function buildWarehouseWorld({
       );
   }
   function truck(parent: T.Object3D) {
-    const vehicle = new T.Group();
-    parent.add(vehicle);
-    box(vehicle, 0, 1.75, -3.4, 2.35, 2.55, 5.6, m.white, true);
-    box(vehicle, 0, 0.55, -3.4, 2.18, 0.24, 6.1, m.navy);
-    box(vehicle, 0, 1.08, -7, 2.3, 1.9, 1.6, m.blue, true);
-    box(vehicle, 0, 0.9, -7.95, 2.15, 0.52, 0.75, m.blue, true);
-    box(vehicle, 0, 1.64, -7.81, 1.9, 0.57, 0.05, m.screen, true);
-    for (const x of [-1.17, 1.17]) {
-      box(vehicle, x, 1.58, -7, 0.04, 0.55, 0.8, m.screen);
-      box(vehicle, x * 1.18, 1.43, -7.55, 0.14, 0.31, 0.16, m.navy, true);
-      box(vehicle, x, 1.13, -6.76, 0.04, 0.05, 0.2, m.white);
-    }
-    box(vehicle, 0, 0.45, -8.35, 2.25, 0.17, 0.16, m.steel, true);
-    box(vehicle, 0, 0.93, -8.34, 0.65, 0.2, 0.025, m.navy);
-    for (const x of [-0.85, 0.85])
-      box(vehicle, x, 0.76, -8.36, 0.34, 0.14, 0.025, led);
-    for (const z of [-7.04, -3.05, -1.25])
-      for (const x of [-1.16, 1.16]) {
-        const wheel = cylinder(vehicle, x, 0.48, z, 0.46, 0.3, m.dark);
-        wheel.rotation.z = Math.PI / 2;
-        const hub = cylinder(vehicle, x * 1.08, 0.48, z, 0.23, 0.035, m.steel);
-        hub.rotation.z = Math.PI / 2;
-      }
-    for (let z = -5.9; z < -0.9; z += 0.45)
-      for (const x of [-1.181, 1.181])
-        box(vehicle, x, 1.75, z, 0.013, 2.35, 0.022, m.steel);
-    box(vehicle, 0, 1.74, -0.57, 2.16, 2.2, 0.04, m.steel);
-    for (const x of [-0.8, 0.8])
-      box(vehicle, x, 0.6, -0.53, 0.19, 0.12, 0.035, m.orange);
-    plaque(vehicle, "WAREHOUSE TWIN", 0, 2.45, -0.52, 1.9, 0.38, "#375988");
+    assets.truck(parent);
   }
   for (const l of layout.locations.filter(
     (l) => l.zone === "inbound" || l.zone === "outbound",
@@ -1150,7 +1130,7 @@ export function buildWarehouseWorld({
     }
     if (hasTruck) {
       const vehicle = new T.Group();
-      vehicle.position.set(0, -0.61, 0.5);
+      vehicle.position.set(0, -0.6, 0);
       dock.add(vehicle);
       truck(vehicle);
       bind(vehicle, l.id);
@@ -1161,19 +1141,7 @@ export function buildWarehouseWorld({
   forklift.position.set(fixtures.forklift.x, 0, fixtures.forklift.z);
   forklift.rotation.y = 0.3;
   root.add(forklift);
-  box(forklift, 0, 0.48, 0, 0.95, 0.78, 1.6, m.teal, true);
-  box(forklift, 0, 0.9, -0.23, 0.6, 0.22, 0.8, m.dark, true);
-  for (const x of [-0.48, 0.48])
-    for (const z of [-0.55, 0.55]) {
-      const wheel = cylinder(forklift, x, 0.22, z, 0.23, 0.15, m.dark);
-      wheel.rotation.z = Math.PI / 2;
-    }
-  for (const x of [-0.39, 0.39]) {
-    box(forklift, x, 1.55, 0.55, 0.06, 2.1, 0.06, m.navy);
-    box(forklift, x, 0.13, 1.05, 0.1, 0.08, 0.9, m.steel);
-  }
-  box(forklift, 0, 2.56, 0.08, 0.9, 0.06, 1.1, m.navy);
-  box(forklift, 0, 0.98, 0.45, 0.9, 0.06, 0.08, m.steel);
+  assets.forklift(forklift);
   const selectionMat = new T.MeshBasicMaterial({
     color: "#18a7c6",
     wireframe: true,
@@ -1185,73 +1153,8 @@ export function buildWarehouseWorld({
   highlight.visible = false;
   highlight.name = "Selection highlight";
   highlight.castShadow = false;
-  // Batch fixed geometry by material and selectable location. Thousands of small
-  // architectural parts keep their detail without becoming thousands of draw calls.
-  root.updateMatrixWorld(true);
-  const batches = new Map<
-    string,
-    {
-      parent: T.Group;
-      material: T.Material;
-      id: string;
-      parts: T.BufferGeometry[];
-      objects: T.Mesh[];
-    }
-  >();
-  root.traverse((object) => {
-    if (
-      !(object instanceof T.Mesh) ||
-      object instanceof T.InstancedMesh ||
-      object === ground ||
-      object === highlight ||
-      !object.visible ||
-      Array.isArray(object.material)
-    )
-      return;
-    let ancestor: T.Object3D | null = object,
-      parent = root,
-      animated = false;
-    while (ancestor && ancestor !== root) {
-      if (ancestor.userData.animated) animated = true;
-      if (ancestor === ceiling) parent = ceiling;
-      if (ancestor === interiorShell) parent = interiorShell;
-      ancestor = ancestor.parent;
-    }
-    if (animated) return;
-    const id = object.userData.locationId || "",
-      key = parent.uuid + object.material.uuid + id;
-    let batch = batches.get(key);
-    if (!batch) {
-      batch = { parent, material: object.material, id, parts: [], objects: [] };
-      batches.set(key, batch);
-    }
-    const transformed = object.geometry.index
-      ? object.geometry.toNonIndexed()
-      : object.geometry.clone();
-    transformed.applyMatrix4(
-      new T.Matrix4()
-        .copy(parent.matrixWorld)
-        .invert()
-        .multiply(object.matrixWorld),
-    );
-    batch.parts.push(transformed);
-    batch.objects.push(object);
-  });
-  for (const batch of batches.values()) {
-    const merged = mergeGeometries(batch.parts);
-    if (!merged) {
-      batch.parts.forEach((p) => p.dispose());
-      continue;
-    }
-    geometries.add(merged);
-    const object = new T.Mesh(merged, batch.material);
-    object.castShadow = !compact;
-    object.receiveShadow = true;
-    object.userData.locationId = batch.id;
-    batch.parent.add(object);
-    batch.objects.forEach((o) => o.removeFromParent());
-    batch.parts.forEach((p) => p.dispose());
-  }
+  // Spatially grouped instancing retains detailed parts with one shared vertex buffer.
+  instanceStatic(root, new Set([ground, highlight]), [ceiling, interiorShell]);
   hitTargets.length = 0;
   root.traverse((o) => {
     if (
@@ -1307,6 +1210,8 @@ export function buildWarehouseWorld({
     wallHeight,
     setShell,
     dispose: () => {
+      root.traverse((o) => { if (o instanceof T.InstancedMesh) o.dispose(); });
+      root.clear();
       geometries.forEach((g) => g.dispose());
       materials.forEach((m) => m.dispose());
       textures.forEach((t) => t.dispose());

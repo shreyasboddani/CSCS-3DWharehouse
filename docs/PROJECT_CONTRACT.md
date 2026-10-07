@@ -41,3 +41,11 @@ Template automatic arrangement grows the shell for configured shelves, doors and
 Custom resizing scales floor outlines and module centers, stretches planning rectangles and fits aisle section counts to the new longitudinal span. Physical equipment dimensions remain unchanged; dock rear edges stay anchored to their wall. Automatic placement repairs fixtures outside changed shapes where space permits, without renumbering or deleting them. Unresolved placements remain visible as errors. Spatial undo/redo restores both design and site dimensions. Roof clearance can grow with rack specification changes. Geometry reductions remain subject to saved inventory, alias and capacity-rule validation.
 
 Large scenes use dimension-aware camera/shadow ranges, indexed module address lookups, batched geometry and instanced stock. Decorative rack labels/2D section strokes may be sampled; aisle count, address generation and selection are not sampled. Browser memory/GPU resources remain finite; there is no claim of unlimited device capacity.
+
+## Visual assets, inventory and rendering efficiency — 2026-10-07
+
+Template and custom scenes share detailed procedural industrial assets: tractor/trailers, forklifts and mobile robots, with shared rounded geometry, tires, hubs, glazing, lamps and metal surfaces. Custom walls retain real aligned dock apertures; roof members respect concave floor outlines. These models remain illustrative assets, not vendor-certified equipment or live SCOTI telemetry.
+
+Static parts are instanced by shared geometry/material and spatial tile, retaining per-instance location IDs. Empty bins remain selectable without drawing wireframe stock. Layout derivations are cached by configuration and signature; structural builder previews omit storage-address allocation while operational layouts preserve every address. Automatic graphics settings reduce shadows and post-processing for large facilities without removing aisles or locations. Idle views stop submitting frames until interaction or animation requires them.
+
+The inventory explorer supports photos, multi-word search, status/type filters, pagination and exact-location focus. Photo uploads use authenticated, workspace-scoped database storage rather than embedding images in warehouse JSON. SCOTI connectivity remains pending its supported API documentation.

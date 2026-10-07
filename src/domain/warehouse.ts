@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { designSchema, generateDesignLayout } from "./design";
+import { imageUrlSchema } from "./media";
 import { formatFeet } from "./units";
 
 export const templates = [
@@ -284,8 +285,25 @@ export function updateTemplate(
   if (patch.bays !== undefined) next.autoFitAisles = false;
   return arrangeTemplate(next);
 }
-export function generateLayout(c: WarehouseConfig): Layout {
-  if (c.design) return generateDesignLayout(c);
+type LayoutDetail = "full" | "structure";
+const layoutCache = new WeakMap<WarehouseConfig, Partial<Record<LayoutDetail, { signature: string; layout: Layout }>>>();
+export function layoutCapacity(c: WarehouseConfig) {
+  return c.design
+    ? c.design.floors.reduce((sum, f) => sum + f.modules.reduce((n, m) =>
+        n + (m.kind === "aisle" ? 2 * m.bays * m.levels * m.bins : 0), 0), 0)
+    : c.aisles * 2 * c.bays * c.levels * c.bins;
+}
+/** Shared read-only derived layout. Signature invalidates even in-place external config edits. */
+export function generateLayout(c: WarehouseConfig, detail: LayoutDetail = "full"): Layout {
+  const signature = JSON.stringify(c);
+  const cache = layoutCache.get(c) || {};
+  if (cache[detail]?.signature === signature) return cache[detail]!.layout;
+  const layout = c.design ? generateDesignLayout(c, detail === "full") : generateTemplateLayout(c, detail === "full");
+  cache[detail] = { signature, layout };
+  layoutCache.set(c, cache);
+  return layout;
+}
+function generateTemplateLayout(c: WarehouseConfig, includeStorage: boolean): Layout {
   const pitch = c.aisleWidth + 2.4;
   const requiredWidth = c.aisles * pitch + (c.template === "l-flow" ? 13 : 7);
   const requiredDepth = c.bays * 2.4 + (c.template === "through" ? 20 : 16);
@@ -375,7 +393,7 @@ export function generateLayout(c: WarehouseConfig): Layout {
         aisle: a,
         side,
       });
-      for (let b = 1; b <= c.bays; b++)
+      if (includeStorage) for (let b = 1; b <= c.bays; b++)
         for (let l = 1; l <= c.levels; l++)
           for (let bin = 1; bin <= c.bins; bin++) {
             const code = `A${pad(a)}-${side}-B${pad(b)}-L${pad(l)}-${pad(bin)}`;
@@ -565,7 +583,7 @@ export function generateLayout(c: WarehouseConfig): Layout {
   const locationMap = new Map(locations.map((l) => [l.id, l]));
   if (new Set(aliases.map((a) => a.externalId)).size !== aliases.length)
     errors.push("External location IDs must be unique.");
-  if (aliases.some((a) => !locationMap.has(a.locationId)))
+  if (includeStorage && aliases.some((a) => !locationMap.has(a.locationId)))
     errors.push(
       "An external location mapping references a location removed by this layout.",
     );
@@ -573,7 +591,7 @@ export function generateLayout(c: WarehouseConfig): Layout {
   if (new Set(rules.map((r) => r.locationId)).size !== rules.length)
     errors.push("Capacity rules must have unique location IDs.");
   if (
-    rules.some(
+    includeStorage && rules.some(
       (r) =>
         !locationMap.has(r.locationId) ||
         ["inbound", "outbound"].includes(locationMap.get(r.locationId)!.zone),
@@ -623,6 +641,7 @@ export const recordSchema = z.object({
   source: z.enum(["Manual", "Example", "Imported"]),
   heldFrom: z.enum(statuses).optional(),
   batch: z.string().trim().max(80).optional(),
+  imageUrl: imageUrlSchema.optional(),
   unit: z.string().trim().max(20).optional(),
   loadedOnTruckId: z.string().min(1).max(64).optional(),
   cargo: z
