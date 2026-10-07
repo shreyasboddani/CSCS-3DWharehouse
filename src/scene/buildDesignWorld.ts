@@ -1,4 +1,5 @@
 import * as T from "three";
+import { aisleNumber } from "./aisleNumber";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { generateLayout } from "../domain/warehouse";
 import type {
@@ -523,6 +524,10 @@ export function buildDesignWorld({
           binMeshes.set(proxies, addressable);
         }
         label(g, `AISLE ${m.number}`, 0, 0.03, -m.bays * 1.2 - 0.5, 2.7);
+        const sign = aisleNumber(m.number, 0, m.levels * 1.25 + 1.5, -m.bays * 1.2);
+        g.add(sign.sprite);
+        textures.add(sign.texture);
+        materials.add(sign.material);
       } else if (m.kind === "inbound" || m.kind === "outbound") {
         for (const x of [-m.width / 2 + 0.12, m.width / 2 - 0.12])
           box(g, x, 1.9, -m.depth / 2 + 0.08, 0.24, 3.8, 0.3, dark);

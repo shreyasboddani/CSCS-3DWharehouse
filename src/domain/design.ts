@@ -243,8 +243,8 @@ export const moduleSchema = z.object({
   zone: z
     .enum(["inbound", "staging", "storage", "packing", "outbound"])
     .optional(),
-  number: z.number().int().min(1).max(999),
-  bays: z.number().int().min(1).max(20),
+  number: z.number().int().min(1),
+  bays: z.number().int().min(1),
   levels: z.number().int().min(1).max(6),
   bins: z.number().int().min(1).max(4),
   aisleWidth: z.number().min(2.4).max(6),
@@ -270,7 +270,7 @@ export const moduleSchema = z.object({
 export const floorSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/),
   name: z.string().trim().min(1).max(80),
-  height: z.number().min(3).max(18),
+  height: z.number().min(3).max(60),
   outline: z.array(pointSchema).min(3).max(32),
   modules: z.array(moduleSchema).max(400),
 });
@@ -447,6 +447,23 @@ export function containsModule(floor: DesignFloor, m: DesignModule) {
       if (!pointInside(p, floor.outline)) return false;
   return true;
 }
+/** Extend an aisle at its current position, without crossing walls or fixtures. */
+export function fitDesignAisle(floor: DesignFloor, aisle: DesignModule): DesignModule | undefined {
+  if (aisle.kind !== "aisle") return undefined;
+  const axis = aisle.rotation % 180 ? "x" : "z";
+  const span = Math.max(...floor.outline.map(p => p[axis])) - Math.min(...floor.outline.map(p => p[axis]));
+  let fitted: DesignModule | undefined;
+  for (let bays = 1; bays <= Math.floor(span / 2.4); bays++) {
+    const candidate = { ...aisle, bays };
+    const walkingSpace: DesignModule = {
+      ...candidate, kind: "area", width: candidate.aisleWidth + 3.4, depth: bays * 2.4 + 2,
+    };
+    if (!containsModule(floor, walkingSpace) || floor.modules.some(m =>
+      m.id !== aisle.id && m.kind !== "area" && modulesOverlap(candidate, m, 0.5))) break;
+    fitted = candidate;
+  }
+  return fitted;
+}
 export function modulesOverlap(
   a: DesignModule,
   b: DesignModule,
@@ -522,7 +539,7 @@ export function outlineTemplate(
 /** Convert the canonical template positions without changing any existing logical address. */
 export function designFromLayout(c: WarehouseConfig, layout: Layout): Design {
   const modules: DesignModule[] = [];
-  for (let a = 1; a <= c.aisles; a++) {
+  for (const a of new Set(layout.racks.map((rack) => rack.aisle))) {
     const racks = layout.racks.filter((r) => r.aisle === a);
     const left = racks[0],
       right = racks[1];
@@ -565,7 +582,7 @@ export function designFromLayout(c: WarehouseConfig, layout: Layout): Design {
       {
         id: "floor-1",
         name: "Ground floor",
-        height: c.ceilingHeight || Math.max(7.5, c.levels * 1.25 + 2.4),
+        height: c.ceilingHeight || Math.max(12, c.levels * 1.25 + 2.4),
         outline: outlineTemplate("rectangle", c.width, c.depth),
         modules,
       },
@@ -700,7 +717,7 @@ export function generateDesignLayout(c: WarehouseConfig): Layout {
       prefix = fi ? `${floor.id}-` : "";
     if (polygonArea(floor.outline) < 9 || polygonCrosses(floor.outline))
       errors.push(
-        `${floor.name}: outline must be a simple polygon with at least 9 m².`,
+        `${floor.name}: draw a building outline that does not cross itself and covers at least 97 ft².`,
       );
     if (
       new Set(floor.outline.map((p) => `${p.x},${p.z}`)).size !==

@@ -2756,3 +2756,7 @@ tbody tr:hover {
 .operational-alerts { border: 1px solid #dce4ec; background: #f5f9fc; border-radius: 16px; padding: 18px 22px; }
 .operational-alerts summary { cursor: pointer; font-weight: 600; }
 .operational-alerts > div { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 14px; }
+
+.builder-extra-options { margin: 1rem 0; }
+.builder-extra-options summary { cursor: pointer; font-weight: 600; padding: 0.6rem 0; }
+.builder-extra-options .field-grid { margin-top: 0.75rem; }

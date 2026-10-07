@@ -66,18 +66,18 @@ export const configSchema = z.object({
   template: z.enum(["through", "u-flow", "l-flow"]),
   width: z.number().min(24).max(140),
   depth: z.number().min(24).max(140),
-  aisles: z.number().int().min(1).max(12),
-  bays: z.number().int().min(1).max(20),
+  aisles: z.number().int().min(1),
+  bays: z.number().int().min(1),
   levels: z.number().int().min(1).max(6),
   bins: z.number().int().min(1).max(4),
   aisleWidth: z.number().min(2.4).max(6),
-  inboundDoors: z.number().int().min(1).max(8),
-  outboundDoors: z.number().int().min(1).max(8),
+  inboundDoors: z.number().int().min(1),
+  outboundDoors: z.number().int().min(1),
   stagingLanes: z.number().int().min(1).max(12),
   packStations: z.number().int().min(1).max(12),
   qualityStations: z.number().int().min(0).max(4).optional(),
   returnsLanes: z.number().int().min(0).max(4).optional(),
-  ceilingHeight: z.number().min(6).max(18).optional(),
+  ceilingHeight: z.number().min(6).max(60).optional(),
   yardDepth: z.number().min(10).max(30).optional(),
   rackFinish: z.enum(["blue", "graphite", "teal"]).optional(),
   floorFinish: z.enum(["concrete", "polished", "slate"]).optional(),
@@ -151,6 +151,7 @@ export const defaultConfig: WarehouseConfig = {
   outboundDoors: 2,
   stagingLanes: 4,
   packStations: 3,
+  ceilingHeight: 12,
 };
 export type Location = {
   floorId?: string;
@@ -193,12 +194,30 @@ export type Layout = {
   errors: string[];
 };
 const pad = (value: number) => String(value).padStart(2, "0");
+export function fitAisleLength(c: WarehouseConfig): WarehouseConfig {
+  // Leave room for loading, packing and walking at the ends of the racks.
+  const endSpace = c.template === "through" ? 20 : 16;
+  const offset = Math.abs(c.layoutOffsets?.storage?.z || 0);
+  return { ...c, bays: Math.max(1, Math.floor((c.depth - endSpace - offset * 2) / 2.4)) };
+}
 export function generateLayout(c: WarehouseConfig): Layout {
   if (c.design) return generateDesignLayout(c);
   const pitch = c.aisleWidth + 2.4;
   const requiredWidth = c.aisles * pitch + (c.template === "l-flow" ? 13 : 7);
   const requiredDepth = c.bays * 2.4 + (c.template === "through" ? 20 : 16);
   const errors: string[] = [];
+  // Count limits are based on physical space and the address budget, rather
+  // than fixed aisle/door/bay caps. Avoid allocating huge invalid previews.
+  if (c.aisles * 2 * c.bays * c.levels * c.bins + c.inboundDoors + c.outboundDoors +
+      c.stagingLanes + c.packStations + (c.qualityStations || 0) + (c.returnsLanes || 0) > 12000 ||
+      c.aisles > Math.floor(c.width / pitch) || c.bays > Math.floor(c.depth / 2.4) ||
+      c.inboundDoors > Math.floor(c.width / 4) ||
+      c.outboundDoors > Math.floor((c.template === "l-flow" ? c.depth : c.width) / 4))
+    return {
+      locations: [], racks: [], capacity: 0, requiredWidth, requiredDepth,
+      centers: { inbound: [0, -c.depth / 2], staging: [0, -c.depth / 2 + 6], storage: [0, 0], packing: [0, c.depth / 2 - 7], outbound: [0, c.depth / 2] },
+      errors: ["These shelves or doors do not fit. Use fewer, make the building bigger, or keep the design within 12,000 storage spaces."],
+    };
   if (c.width < requiredWidth)
     errors.push(
       `This rack configuration needs at least ${requiredWidth.toFixed(1)} m of width. Increase the footprint or reduce aisles.`,

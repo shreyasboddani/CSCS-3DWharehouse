@@ -1,4 +1,5 @@
 import * as T from "three";
+import { aisleNumber } from "./aisleNumber";
 import { usesTemplateGeometry } from "../domain/design";
 import { buildDesignWorld } from "./buildDesignWorld";
 import { dockPose, facilityFixtures } from "../domain/facility";
@@ -281,7 +282,7 @@ export function buildWarehouseWorld({
     });
   };
   // Full facility geometry. The overview opens two walls and the roof; walking closes the shell.
-  const wallHeight = c.ceilingHeight ?? Math.max(7.5, c.levels * 1.25 + 2.4),
+  const wallHeight = c.ceilingHeight ?? Math.max(12, c.levels * 1.25 + 2.4),
     front = -c.depth / 2,
     back = c.depth / 2;
   // Keep the foundation below the entire floor thickness. The old slab top
@@ -774,6 +775,10 @@ export function buildWarehouseWorld({
     const centerX =
       rack.side === "L" ? rack.x + c.aisleWidth / 2 + 0.6 : undefined;
     if (centerX !== undefined) {
+      const sign = aisleNumber(rack.aisle, centerX, rack.height + 1.2, rack.z - rack.length / 2);
+      root.add(sign.sprite);
+      textures.add(sign.texture);
+      materials.add(sign.material);
       for (const dx of [-c.aisleWidth / 2 + 0.2, c.aisleWidth / 2 - 0.2])
         box(
           root,

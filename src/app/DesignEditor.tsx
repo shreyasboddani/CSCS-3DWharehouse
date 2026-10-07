@@ -1,3 +1,4 @@
+import { squareFeet } from "../domain/units";
 import type { DraftInput } from "../domain/drafts";
 import { useNavigate } from "react-router-dom";
 import { lazy, Suspense, useMemo, useRef, useState, useEffect } from "react";
@@ -16,6 +17,7 @@ import {
   designFromLayout,
   equipmentCatalog,
   floorElevation,
+  fitDesignAisle,
   moduleSize,
   outlineTemplate,
   polygonArea,
@@ -394,7 +396,7 @@ export function DesignEditor({
         {
           id,
           name: `Floor ${design.floors.length + 1}`,
-          height: 6,
+          height: 12,
           outline: floor.outline.map((p) => ({ ...p })),
           modules: [],
         },
@@ -456,7 +458,7 @@ export function DesignEditor({
       | "speed"
       | "binCapacity",
     min: number,
-    max: number,
+    max: number | undefined,
     step = 0.5,
   ) => (
     <label key={key}>
@@ -469,7 +471,7 @@ export function DesignEditor({
         step={step}
         onChange={(e) => {
           const n = Number(e.target.value);
-          if (Number.isFinite(n) && n >= min && n <= max)
+          if (Number.isFinite(n) && n >= min && n <= (max ?? Number.MAX_SAFE_INTEGER))
             updateModule({ [key]: n });
         }}
       />
@@ -481,7 +483,7 @@ export function DesignEditor({
         <div>
           <span className="eyebrow">WAREHOUSE DESIGN STUDIO</span>
           <h1>Build your floor. Your way.</h1>
-          <p>A measured 2D design, translated into the same 3D space.</p>
+          <p>Choose a building shape. Drag its corners. Add shelves and check it in 3D.</p>
         </div>
         <div className="actions">
           {onSaveDraft && (
@@ -579,10 +581,7 @@ export function DesignEditor({
         </div>
         <div>
           <strong>
-            {design.floors
-              .reduce((a, f) => a + polygonArea(f.outline), 0)
-              .toFixed(0)}{" "}
-            m²
+            {squareFeet(design.floors.reduce((a, f) => a + polygonArea(f.outline), 0))} ft²
           </strong>
           <span>total floor area</span>
         </div>
@@ -639,6 +638,28 @@ export function DesignEditor({
             >
               Select / move
             </button>
+            <label>
+              Building shape
+              <select
+                aria-label="Choose building shape"
+                defaultValue=""
+                onChange={(e) => {
+                  const shape = e.target.value as "rectangle" | "l-shape" | "t-shape";
+                  if (shape) {
+                    changeFloor({ ...floor, outline: outlineTemplate(shape, siteWidth, siteDepth) });
+                    setSelected([]);
+                    setTool("select");
+                    setArmed(undefined);
+                  }
+                  e.target.value = "";
+                }}
+              >
+                <option value="">Choose shape…</option>
+                <option value="rectangle">Rectangle</option>
+                <option value="l-shape">L shape</option>
+                <option value="t-shape">T shape</option>
+              </select>
+            </label>
             <button
               aria-pressed={tool === "outline"}
               onClick={() => {
@@ -647,7 +668,7 @@ export function DesignEditor({
                 setArmed(undefined);
               }}
             >
-              Draw floor outline
+              Draw building shape
             </button>
             <button
               aria-pressed={tool === "area"}
@@ -842,7 +863,7 @@ export function DesignEditor({
             </span>
             <span>
               {siteWidth} × {siteDepth} m site ·{" "}
-              {polygonArea(floor.outline).toFixed(1)} m² floor
+              {squareFeet(polygonArea(floor.outline))} ft² floor
             </span>
           </div>
           {preview ? (
@@ -1014,12 +1035,12 @@ export function DesignEditor({
                         data-vertex={i}
                         cx={p.x}
                         cy={p.z}
-                        r=".25"
+                        r=".55"
                         fill="#fff"
                         stroke="#356bdd"
                         strokeWidth=".1"
                       >
-                        <title>Drag outline vertex {i + 1}</title>
+                        <title>Drag building corner {i + 1}</title>
                       </circle>
                     </g>
                   );
@@ -1239,7 +1260,7 @@ export function DesignEditor({
                 <div className="design-input-grid">
                   {input("X position (m)", "x", -70, 70)}
                   {input("Z position (m)", "z", -70, 70)}
-                  {input("Address number", "number", 1, 999, 1)}
+                  {input("Aisle or door number", "number", 1, undefined, 1)}
                   {input("Height (m)", "height", 0.1, 18, 0.1)}
                 </div>
                 <label>
@@ -1263,9 +1284,19 @@ export function DesignEditor({
                 </label>
                 {module.kind === "aisle" ? (
                   <>
-                    <h3>Rack specification</h3>
+                    <h3>Shelves in this aisle</h3>
+                    <button
+                      onClick={() => {
+                        const fitted = fitDesignAisle(floor, module);
+                        if (fitted) updateModule({ bays: fitted.bays });
+                      }}
+                      disabled={!fitDesignAisle(floor, module)}
+                    >
+                      Fit aisle length to this building
+                    </button>
+                    <p>Length stops at walls and other equipment. Move the aisle first if it does not fit.</p>
                     <div className="design-input-grid">
-                      {input("Bays per face", "bays", 1, 20, 1)}
+                      {input("Shelf sections along the aisle", "bays", 1, undefined, 1)}
                       {input("Levels", "levels", 1, 6, 1)}
                       {input("Bins per bay / level", "bins", 1, 4, 1)}
                       {input("Aisle clearance (m)", "aisleWidth", 2.4, 6, 0.1)}
@@ -1590,16 +1621,16 @@ export function DesignEditor({
                   />
                 </label>
                 <label>
-                  Clear height (m)
+                  Roof height (m)
                   <input
                     type="number"
                     min={3}
-                    max={18}
+                    max={60}
                     step={0.1}
                     value={floor.height}
                     onChange={(e) => {
                       const n = Number(e.target.value);
-                      if (n >= 3 && n <= 18)
+                      if (n >= 3 && n <= 60)
                         changeFloor({ ...floor, height: n });
                     }}
                   />
@@ -1610,7 +1641,7 @@ export function DesignEditor({
                   a 0.3 m slab.
                 </p>
                 <label>
-                  Outline starting shape
+                  Building shape
                   <select
                     defaultValue=""
                     onChange={(e) => {
@@ -1629,15 +1660,45 @@ export function DesignEditor({
                   >
                     <option value="">Choose shape…</option>
                     <option value="rectangle">Rectangle</option>
-                    <option value="l-shape">L-shaped shell</option>
-                    <option value="t-shape">T-shaped shell</option>
+                    <option value="l-shape">L shape</option>
+                    <option value="t-shape">T shape</option>
                   </select>
                 </label>
                 <p>
-                  Draw a custom perimeter or drag its vertex handles. Grid
-                  labels show meters from the site’s top-left corner; position
-                  fields use its centered X/Z coordinates.
+                  Drag the dots on the edge to change the building. To draw a new shape, click “Draw building shape”, click each corner, then click “Close outline”.
                 </p>
+                <details>
+                  <summary>Move corners by numbers</summary>
+                  <p>Measure from the top-left corner of the site. All distances are in meters.</p>
+                  {floor.outline.map((point, index) => (
+                    <div className="design-input-grid" key={index}>
+                      {(["x", "z"] as const).map(axis => {
+                        const span = axis === "x" ? siteWidth : siteDepth;
+                        return (
+                          <label key={axis}>
+                            Corner {index + 1}: {axis === "x" ? "across" : "down"} (m)
+                            <input
+                              type="number"
+                              min={0}
+                              max={span}
+                              step={design.grid}
+                              value={Number((point[axis] + span / 2).toFixed(2))}
+                              onChange={(e) => {
+                                if (e.target.value === "") return;
+                                const n = Number(e.target.value);
+                                if (Number.isFinite(n) && n >= 0 && n <= span)
+                                  changeFloor({
+                                    ...floor,
+                                    outline: floor.outline.map((p, i) => i === index ? { ...p, [axis]: n - span / 2 } : p),
+                                  });
+                              }}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </details>
                 <button
                   disabled={floorIndex === 0}
                   className="danger"
